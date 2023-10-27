@@ -122,11 +122,24 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
         area_ra = (area_tot)**0.5
         area_dec = area_ra
     elif survey.lower() == 'kids':
-        area_ra = 1. # degree
-        area_dec = 1. # degree
+        #area_ra = 1. # degree
+       # area_dec = 1. # degree
+       #FHP
+        area_ra = 2. # degree
+        area_dec = 2. # degree
         # check if grid is required
         if (gal_position_type[0]=='grid'):
             raise Exception('KiDS survey does not observe grid world :( Please use other survey.')
+    #FHP let's try this another day...
+    # elif survey.lower() == 'UNIONS':
+    #     print('you are in UNIONS in ImSim')
+    #     area_ra = 2. # degree # the fundamental idea here is that we cut a square of Ra 2 dec 2 for each of our exposures and then only the galaxies close enough to the center will fall onto our image
+    #     area_dec = 2. # degree
+    #     # check if grid is required
+    #     if (gal_position_type[0]=='grid'):
+    #         raise Exception('KiDS survey does not observe grid world :( Please use other survey.')
+        
+
     elif survey.lower() == 'one_tile':
         # area same as the input
         ## 0.999 is 1
@@ -164,7 +177,12 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
     i_ra = 0
     i_dec = 0
     for i_tile, noise_info_tile in noise_info_selec.iterrows():
-        tile_label = noise_info_tile['label']
+        tile_label = noise_info_tile['label'] #now the smart thing is the label is always there so we have to ensure we can read RA DEC with a regular expression
+        if gal_position_type[0] == 'true_allsky':
+            if len(tile_label)!=15:
+                print('Problem: please enter a noise info label with format 000.000-000.000 (RA-DEC)',flush=True)
+            ra_cen,dec_cen=float(tile_label[0:7]),float(tile_label[8:15])#this assumes 6 digit numbers for RA DEC
+            print('processing an image centered around ra ',ra_cen,' dec ',dec_cen,flush=True)
 
         if (i_tile!=0) and (i_ra==0) and (i_dec==0):
             logger.warning(f'repeating patterns started from tile {tile_label}')
@@ -192,12 +210,23 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
             dec_min = np.arcsin(dec_sin_min * np.pi / 180.) * 180. / np.pi
             dec_max = np.arcsin(dec_sin_max * np.pi / 180.) * 180. / np.pi
 
+        if gal_position_type[0] == 'true_allsky':
+            ra_min = ra_cen -area_ra/2
+            ra_max = ra_cen+ area_ra/2
+            dec_sin_min = dec_cen + area_dec/2
+            dec_sin_max = dec_cen + area_dec/2
+            print('Using galaxies in the intervals, ra: ',ra_min,' ',ra_max,' dec ',dec_sin_min,' ',dec_sin_max)
+
         # select galaxies
         ## careful one
         mask_ra = (gals_info[0]['RA'] >= ra_min) & (gals_info[0]['RA'] < ra_max)
         mask_dec = (gals_info[0]['DEC'] >= dec_min) & (gals_info[0]['DEC'] < dec_max)
+        print('using ', np.count_nonzero(mask_ra & mask_dec),' galaxies',flush=True)
+        print('galaxies ra ',gals_info[0]['RA'])
+        print('galaxies dex ',gals_info[0]['DEC'],flush=True )
         gals_info_careful_selec = gals_info[0][mask_ra & mask_dec].copy()
         gals_info_careful_selec.reset_index(drop=True, inplace=True)
+
         ## casual one
         if gals_info[1] is not None:
             mask_ra = (gals_info[1]['RA'] >= ra_min) & (gals_info[1]['RA'] < ra_max)
@@ -263,7 +292,8 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
             del RA_random, DEC_random
 
         else:
-            if gal_position_type[0] != 'true':
+            #if gal_position_type[0] != 'true' and  gal_position_type[0] != 'true_allsky':
+            if gal_position_type[0] not in ['true', 'true_allsky']:
                 raise Exception(f'Unsupported gal_position_type: {gal_position_type[0]} !')
 
         ## output galaxies info
@@ -453,7 +483,9 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
                         raise Exception(f'{band} does not support varChips for KiDS survey (only use r-band for KiDS)!')
 
                     # get noise info for each exposure
-                    for i_expo in range(5):
+                    #FHP
+                    #for i_expo in range(5):
+                    for i_expo in range(1):
                         # noise is still same for varChips
                         rms = noise_info_tile[f'rms_{band}_expo{i_expo}']
                         # psf is different
