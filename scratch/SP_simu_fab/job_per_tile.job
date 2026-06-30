@@ -1,0 +1,75 @@
+#!/bin/bash
+
+##########################
+# SMP Script for CANDIDE #
+##########################
+
+# Receive email when job finishes or aborts
+# Set a name for the job
+#SBATCH --job-name  ngmix_multi
+#SBATCH --output multi_job.log
+# Join output and errors in one file
+# Set maximum computing time (e.g. 5min)
+#SBATCH --time=23:00:00
+# Request number of cores
+#SBATCH --nodes=1 
+#SBATCH --cpus-per-task=8
+#SBATCH --ntasks-per-node=1
+#SBATCH --ntasks-per-core=1
+#SBATCH --partition=pscompl,pscomp
+#SBATCH --nodelist=n36,n35,n34,n33,n32,n28,n27,n26,n25,n24,n23,n22
+# Full path to environment
+#export SPENV="$HOME/.conda/envs/shapepipe"
+#export SPDIR="$HOME/shapepipe"
+
+# Activate conda environment
+module load intelpython/3-2020.4
+#source activate wlenv
+#python  /home/hervas/fhervas/workdir_skills/input/generate_input/copy_exposures_SP.py
+
+source activate shapepipe
+pwd
+# Just 1 for OMP_NUM_THREADS for this Python script
+export OMP_NUM_THREADS=1
+# And let the low-level threading use all of the requested cores
+export OPENBLAS_NUM_THREADS=1
+
+ARGUMENTS_FILE="numbers_run.txt"
+ARGS=($(cat "$ARGUMENTS_FILE"))
+
+# Get the number of CPUs available
+TOTAL_CPUS=48
+
+# Function to run a single process pinned to a specific CP
+arg=$1
+cpu_id=$2
+
+
+pwd
+echo "Running process with argument $arg on CPU $cpu_id"
+apptainer exec --bind /n17data,/n23data1,/n09data,/automnt/n09data /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 1 ;
+wait 15
+../hack_get_images.sh ./outputs/output_$arg/
+apptainer exec --bind /n17data,/n23data1,/n09data,/automnt/n09data /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 2 ;
+wait 15
+apptainer exec --bind /n17data,/n23data1,/n09data,/automnt/n09data /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 4;
+apptainer exec --bind /n17data,/n23data1,/n09data,/automnt/n09data /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 8;
+source activate shapepipe;
+apptainer exec --bind /n17data,/n23data1,/n09data,/automnt/n09data /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 16;
+apptainer exec --bind /n17data,/n23data1,/n09data,/automnt/n09data /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 32;
+python /home/hervas/fhervas/workdir_skills/input/generate_input/psf_dict_script.py ./outputs/output_$arg ./outputs/output_$arg/fake_psf_autom;
+apptainer exec --bind /n17data,/n23data1,/n09data,/automnt/n09data /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 64;
+#rm -r ./outputs/output_$arg/*SpMh*
+apptainer exec --bind /n17data,/n23data1,/n09data,/automnt/n09data /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 128;
+apptainer exec --bind /n17data,/n23data1,/n09data,/automnt/n09data /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 256
+apptainer exec --bind /n17data,/n23data1,/n09data,/automnt/n09data /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 512
+#rm -r ./outputs/output_$arg/*SxSePsf*
+# Run ShapePipe using full paths
+#python correlation_compute.py -s '["CMASS","CMASS","CMASS"]' -l '["sp_ex","sp_ex","sp_ex"]' -m '["sp","sp","sp"]' -t '["LUMCMASS1","LUMCMASS2","LUMCMASS3"]'
+# Return exit code
+exit 0
+~                                                                                                                                                                                            
+~                                                                                                                                                                                            
+~                                                                                                                                                                                            
+~                                                                                                                                                                                            
+"candide_smp.sh" 31L, 695C                                                                                                                                                 31,1          All

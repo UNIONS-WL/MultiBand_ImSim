@@ -1,0 +1,21 @@
+echo "You cleaned up outputs right?"
+module load openmpi
+for dir in SP_1z2z_star_grid; do
+
+  echo $dir	
+  if [ -d "$dir" ]; then
+	  cd "$dir"  
+      ARGUMENTS_FILE="numbers_run.txt"
+      ARGS=($(cat "$ARGUMENTS_FILE"))
+      for arg in "${ARGS[@]}"; do
+            echo "Processing: $arg"
+            sbatch --output="/home/hervas/n25/SP_simu_fab/output_log_job/${dir}${arg}"  /n09data/hervas/SP_simu_fab/job_per_tile_newversion.job $arg 
+            #apptainer exec --bind /n17data,/n23data1,/n25data1,/n09data /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 1 
+	        sleep 150
+    # Do something with each argument
+      done
+    cd /home/hervas/n25/SP_simu_fab/
+      
+  
+fi
+done

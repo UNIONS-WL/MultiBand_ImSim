@@ -1,0 +1,105 @@
+#!/bin/bash
+
+##########################
+# SMP Script for CANDIDE #
+##########################
+
+# Receive email when job finishes or aborts
+#SBATCH --mail-user fabi.hervas@gmail.com
+#SBATCH --mail-type END
+# Set a name for the job
+#SBATCH --job-name  ngmix_multi
+#SBATCH --output ./multi_job.log
+# Join output and errors in one file
+# Set maximum computing time (e.g. 5min)
+#SBATCH --time=23:00:00
+# Request number of cores
+#SBATCH --nodes=1 
+#SBATCH --cpus-per-task=4
+#SBATCH --ntasks-per-node=1
+#SBATCH --ntasks-per-core=1
+#SBATCH --partition=pscompl,pscomp,compl
+##SBATCH --nodelist=n25
+# Full path to environment
+#export SPENV="$HOME/.conda/envs/shapepipe"
+#export SPDIR="$HOME/shapepipe"
+
+# Activate conda environment
+module load intelpython/3-2020.4
+#source activate wlenv
+#python  /home/hervas/fhervas/workdir_skills/input/generate_input/copy_exposures_SP.py
+
+source activate shapepipe
+cd ./
+pwd
+# Just 1 for OMP_NUM_THREADS for this Python script
+export OMP_NUM_THREADS=1
+# And let the low-level threading use all of the requested cores
+export OPENBLAS_NUM_THREADS=1
+
+ARGUMENTS_FILE="numbers_run.txt"
+ARGS=($(cat "$ARGUMENTS_FILE"))
+
+# Get the number of CPUs available
+TOTAL_CPUS=48
+
+# Function to run a single process pinned to a specific CPU
+run_process() {
+  local arg=$1
+  local cpu_id=$2
+  echo "Running process with argument $arg on CPU $cpu_id"
+  taskset -c "$cpu_id"  bash -c "apptainer exec --bind /n17data,/n23data1,/n25data1 /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 1 ;
+apptainer exec --bind /n17data,/n23data1,/n25data1 /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 2 ;
+apptainer exec --bind /n17data,/n23data1,/n25data1 /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 4;
+apptainer exec --bind /n17data,/n23data1,/n25data1 /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 8;
+source activate shapepipe;
+apptainer exec --bind /n17data,/n23data1,/n25data1 /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 16;
+apptainer exec --bind /n17data,/n23data1,/n25data1 /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 32;
+python /home/hervas/fhervas/workdir_skills/input/generate_input/psf_dict_script.py ./outputs/output_$arg ./outputs/output_$arg/fake_psf_autom;
+apptainer exec --bind /n17data,/n23data1,/n25data1 /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 64;
+apptainer exec --bind /n17data,/n23data1,/n25data1 /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 128;
+apptainer exec --bind /n17data,/n23data1,/n25data1 /home/hervas/fhervas/shapepipe-1.4 ./job_sp_14.job $arg -j 256" &
+}
+
+# Loop to launch processes with 10-second intervals, pinning each to a CPU
+echo "SLURM_CPUS_ON_NODE: $SLURM_CPUS_ON_NODE"
+echo "SLURM_CPUS_PER_TASK: $SLURM_CPUS_PER_TASK"
+
+# List allocated CPU IDs
+echo "Allocated CPUs for this job:"
+cat /proc/self/status | grep Cpus_allowed_list
+
+# Using taskset to confirm affinity
+echo "CPU affinity according to taskset:"
+taskset -cp $$
+cpu_list=$(grep Cpus_allowed_list /proc/self/status | awk '{print $2}')
+expanded_list=$(echo $cpu_list | awk -F, '{for(i=1;i<=NF;i++){split($i,a,"-");if(length(a)==2){for(j=a[1];j<=a[2];j++)print j}else print a[1]}}')
+readarray -t cpu_array <<< "$expanded_list"
+
+# Access array elements
+echo "First CPU: ${cpu_array[0]}"  # Output: 0
+echo "Last CPU: ${cpu_array[-1]}" # Output: 5
+
+for ((i = 0; i < TOTAL_CPUS; i++)); do
+  if [ $i -lt ${#ARGS[@]} ]; then
+    run_process "${ARGS[i]}" "${cpu_array[i]}"
+    sleep 10
+  else
+    echo "No more arguments to process."
+    break
+  fi
+done
+
+# Wait for all background processes to finish
+wait
+echo "All processes completed."
+
+# Run ShapePipe using full paths
+#python correlation_compute.py -s '["CMASS","CMASS","CMASS"]' -l '["sp_ex","sp_ex","sp_ex"]' -m '["sp","sp","sp"]' -t '["LUMCMASS1","LUMCMASS2","LUMCMASS3"]'
+# Return exit code
+exit 0
+~                                                                                                                                                                                            
+~                                                                                                                                                                                            
+~                                                                                                                                                                                            
+~                                                                                                                                                                                            
+"candide_smp.sh" 31L, 695C                                                                                                                                                 31,1          All
