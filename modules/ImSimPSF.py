@@ -80,7 +80,7 @@ def AiryPSF(lam, diam, obscuration, psf_e=None):
 
     return psf
 
-def loadPixelPSF(inpath, pixel_scale, offset=(0.5, 0.5)):
+def loadPixelPSF(inpath, pixel_scale, offset=(0., 0.)):
     """
     Load pixelized PSF images as PSF model.
 
@@ -125,8 +125,9 @@ def PSFima(PSF, pixel_scale, size=32, pixelPSF=False):
     """
 
     psf_image = galsim.Image(size, size)
-    PSF_lf = PSF.shift(0.5*pixel_scale, 0.5*pixel_scale)
-
+    #PSF_lf = PSF.shift(0.5*pixel_scale, 0.5*pixel_scale)
+    print("no lensfit shift")
+    PSF_lf = PSF.shift(0.*pixel_scale, 0.*pixel_scale)
     if pixelPSF:
         draw_method = 'no_pixel'
     else:

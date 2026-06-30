@@ -31,15 +31,17 @@ SERSIC_N_MIN, SERSIC_N_MAX = 0.3, 6.2
 ### (for faster calculation)
 TRUNC_FACTOR = 5
 
-def SimpleCanvas(RA_min, RA_max, DEC_min, DEC_max, pixel_scale, edge_sep=18.):
+def SimpleCanvas(RA_min, RA_max, DEC_min, DEC_max, pixel_scale,tile_label, edge_sep=18.):
     """
     Build a simple canvas
     """
 
     ## center used as reference point
-    RA0 = (RA_min + RA_max) / 2.
-    DEC0 = (DEC_min + DEC_max) / 2.
-
+    #RA0 = (RA_min + RA_max) / 2. #FHP this should be more precise, maybe it works for now
+    #DEC0 = (DEC_min + DEC_max) / 2.
+    RA0 = float(tile_label[0:7]) 
+    DEC0 = float(tile_label[8:15])
+    print('the canvas is centerd around ra ',RA0,' dec ',DEC0)
     # decide bounds
     xmax = (RA_max - RA_min) * 3600. / pixel_scale + 2.*edge_sep/pixel_scale # edge_sep in both sides to avoid edge effects
     ymax = (DEC_max - DEC_min) * 3600. / pixel_scale + 2.*edge_sep/pixel_scale
@@ -122,8 +124,12 @@ def GalaxiesImage(canvas, band, pixel_scale, PSF,
     logger.debug(f'Total number of input galaxies: {len(x_gals)}')
     del RA_gals, DEC_gals, wcs
     ## 0.5 for offset (difference between GalSim and Sextractor)
-    x_gals += 0.5
-    y_gals += 0.5
+    #FHP test de deactivation
+    #x_gals += 0.5
+    #y_gals += 0.5
+    x_gals += 0.
+    y_gals += 0.
+    
 
     # ignore those out of the boundaries
     mask_tmp = (x_gals>=bounds.xmin) & (x_gals<=bounds.xmax) & (y_gals>=bounds.ymin) & (y_gals<=bounds.ymax)
@@ -136,8 +142,11 @@ def GalaxiesImage(canvas, band, pixel_scale, PSF,
 
     # get detailed positions for galsim
     ## to int
-    ix_gals = np.int32(np.floor(x_gals + 0.5))
-    iy_gals = np.int32(np.floor(y_gals + 0.5))
+    #FHP test de deactivation
+    ix_gals = np.int32(np.floor(x_gals ))#+ 0.5))
+    iy_gals = np.int32(np.floor(y_gals ))#+ 0.5))
+    #ix_gals = np.int32(np.floor(x_gals))
+    #iy_gals = np.int32(np.floor(y_gals))
     ## offset
     dx_gals = x_gals - ix_gals
     dy_gals = y_gals - iy_gals
@@ -164,6 +173,47 @@ def GalaxiesImage(canvas, band, pixel_scale, PSF,
         PA_gal += gal_rotation_angle
 
         # +++ Simulation
+
+        ## FHP inspiration from https://github.com/aguinot/shapepipe/blob/make_simu_runner/shapepipe/modules/LenSimu_package/GalaxyMaker.py
+
+        #bulge_n is bulge_angle now, not clear what to make of this information
+        ## OKKKK so this part worked well with MICE as input, we are gonna recomment it but we should really work on that shape keyword
+        # Starting the comment on 7.11 (back to SHARKS)
+        ### bulge + disk
+        # bulge
+        # bulge_fraction = gal_info['bulge_fraction']
+        # # bulge_n = gal_info['bulge_n']  ##There is no bulge_n Sersic in Mice
+        # bulge_q = gal_info['bulge_axis_ratio']
+        # if  (bulge_q < Q_MIN) or (bulge_q > Q_MAX):
+        #     bulge_q = float(np.where(bulge_q<Q_MIN, Q_MIN, Q_MAX))
+        # bulge_Re = gal_info['bulge_Re'] * (bulge_q)**0.5 # account for the ellipticity
+        
+        # bulge_gal = galsim.DeVaucouleurs(half_light_radius=bulge_Re, flux=1.0, trunc=TRUNC_FACTOR*bulge_Re, flux_untruncated=True)
+        
+        # # intrinsic ellipticity
+        # bulge_gal = bulge_gal.shear(q=bulge_q, beta=PA_gal*galsim.degrees)
+
+        # # disk
+        # if bulge_fraction < 1:
+        #     disk_q = gal_info['disk_axis_ratio']
+        #     if  (disk_q < Q_MIN) or (disk_q > Q_MAX):
+        #         disk_q = float(np.where(disk_q<Q_MIN, Q_MIN, Q_MAX))
+        #     disk_Re = gal_info['disk_Re'] * (disk_q)**0.5 # account for the ellipticity
+        #     disk_gal = galsim.Exponential(half_light_radius=disk_Re, flux=1.0)
+        #     # intrinsic ellipticity
+        #     disk_gal = disk_gal.shear(q=disk_q, beta=PA_gal*galsim.degrees)
+
+        #     galaxy = flux_gal * (bulge_fraction * bulge_gal + (1 - bulge_fraction) * disk_gal)
+
+        # else:
+        #     galaxy = flux_gal * bulge_gal
+
+        ## FHP ideally we would add a keyword here specifying which shape simulation method to use, but I spent two hours already so I will retry later
+        #if gal_info['shape_method']=='bulge_disk_mice':
+        #    print('arrived  in bulge_disk_mice')
+
+
+       
         n_gal = gal_info['sersic_n']
         re_gal = gal_info['Re']
         if (n_gal >= SERSIC_N_CUT[0]) and (n_gal <= SERSIC_N_CUT[1]) and (re_gal >= RE_CUT[0]) and (re_gal <= RE_CUT[1]):

@@ -10,18 +10,18 @@
 import math
 import galsim
 import numpy as np
-
+import logging
 # some OmegaCAM values
-Pixel_scale = 0.214/3600. # degree
-Nchips_x = 8 # number of CCDs (x-axis)
-Nchips_y = 4 # number of CCDs (y-axis)
-Npix_chip_x = 2048 # pixels each CCD (x-axis)
-Npix_chip_y = 4100 # pixels each CCD (y-axis)
-GAP_x = 100 # pix # gap between the long sides of the CCDs
-GAP_y_narrow = 55 # pix # central gap along the short sides
-GAP_y_wide = 376 # pix # wide gap along short sides
-Npix_x = Nchips_x*Npix_chip_x + 7*GAP_x  # total number of pixels each tile (x-axis)
-Npix_y = Nchips_y*Npix_chip_y + GAP_y_narrow + 2*GAP_y_wide # total number of pixels each tile (y-axis)
+# Pixel_scale = 0.214/3600. # degree
+# Nchips_x = 8 # number of CCDs (x-axis)
+# Nchips_y = 4 # number of CCDs (y-axis)
+# Npix_chip_x = 2048 # pixels each CCD (x-axis)
+# Npix_chip_y = 4100 # pixels each CCD (y-axis)
+# GAP_x = 100 # pix # gap between the long sides of the CCDs
+# GAP_y_narrow = 55 # pix # central gap along the short sides
+# GAP_y_wide = 376 # pix # wide gap along short sides
+# Npix_x = Nchips_x*Npix_chip_x + 7*GAP_x  # total number of pixels each tile (x-axis)
+# Npix_y = Nchips_y*Npix_chip_y + GAP_y_narrow + 2*GAP_y_wide # total number of pixels each tile (y-axis)
 
 # some observation values
 # N_exposures_gri = 5 # number of exposures in gri-bands
@@ -31,6 +31,22 @@ Dither_y_pix = 85./0.214 # pix # dither step along dec
 Dither_x_arcsec = 25. # arcsec # dither step along RA
 Dither_y_arcsec = 85. # arcsec # dither step along dec
 
+#No need fot the ditther pattern, we only do single exposures at the right positions
+#FHP UNIONS values:
+
+Pixel_scale = 0.1850/3600. # degree #UPDATED
+Nchips_x = 11 # number of CCDs (x-axis) #UPDATED
+Nchips_y = 4 # number of CCDs (y-axis) #UPDATED
+Npix_chip_x = 2048 # pixels each CCD (x-axis) #UPDATED
+Npix_chip_y = 4612 # pixels each CCD (y-axis) #UPDATED
+GAP_x = 69 # pix # gap between the long sides of the CCDs
+GAP_y_narrow = 55 # pix # central gap along the short sides
+GAP_y_wide = 425 # pix # wide gap along short sides
+Npix_x = Nchips_x*Npix_chip_x + 10*GAP_x  # total number of pixels each tile (x-axis)
+Npix_y = Nchips_y*Npix_chip_y + GAP_y_narrow + 2*GAP_y_wide # total number of pixels each tile (y-axis)
+
+
+logger = logging.getLogger(__name__)
 def getKiDScanvases(RA0, DEC0, id_exposure=0):
     """
     Build a bunch of canvases mimicking OmegaCAM chips
@@ -55,8 +71,10 @@ def getKiDScanvases(RA0, DEC0, id_exposure=0):
     DEC0 -= (id_exposure-2)*(Dither_y_arcsec/3600.)
 
     # transfer to the center value for the first chip
-    RA0 -= (Npix_x/2.-Npix_chip_x/2.)*Pixel_scale
-    DEC0 -= (Npix_y/2.-Npix_chip_y/2.)*Pixel_scale
+  
+    DEC0 -= (Npix_y/2.-Npix_chip_y/2.)*Pixel_scale 
+    RA0 -= (Npix_x/2.-Npix_chip_x/2.)*Pixel_scale/np.cos(DEC0/180.*math.pi)
+    
 
     # bounds for each CCD
     bounds = galsim.BoundsI(xmin=0, xmax=Npix_chip_x-1, ymin=0, ymax=Npix_chip_y-1)
@@ -74,10 +92,12 @@ def getKiDScanvases(RA0, DEC0, id_exposure=0):
     canvases_list = []
     for i_chip_x in range(Nchips_x):
         for i_chip_y in range(Nchips_y):
-
+            #logger.info('i_chip_x',i_chip_x)
+            #logger.info('i_chip_y',i_chip_y)
             ## Reference point in wcs
-            RA0_tmp = RA0 + i_chip_x*(Npix_chip_x+GAP_x)*Pixel_scale
             DEC0_tmp = DEC0 + i_chip_y*Npix_chip_y*Pixel_scale
+            RA0_tmp = RA0 + i_chip_x*(Npix_chip_x+GAP_x)*Pixel_scale/np.cos(DEC0_tmp/180.*math.pi)
+            
             ### gaps in y axis
             if i_chip_y >= 1:
                 DEC0_tmp += GAP_y_wide*Pixel_scale
@@ -92,7 +112,7 @@ def getKiDScanvases(RA0, DEC0, id_exposure=0):
 
             ## build the canvas
             canvases_list.append(galsim.ImageF(bounds=bounds, wcs=wcs))
-
+    logger.info('canvases_list',canvases_list)
     return canvases_list
 
 def cutKiDStile(image_ori_noiseless, noise, id_exposure=0):
@@ -188,7 +208,7 @@ def cutKiDSchips(image_tile):
                         y_min + Npix_chip_y + GAP_y_wide,
                         y_min + 2*Npix_chip_y + GAP_y_wide + GAP_y_narrow,
                         y_min + 3*Npix_chip_y + 2*GAP_y_wide + GAP_y_narrow]
-
+    logger.info('y_start_list',y_start_list)
     # chips
     image_chips = []
     for y_start in y_start_list:
@@ -200,5 +220,6 @@ def cutKiDSchips(image_tile):
             bounds_chip = galsim.BoundsI(xmin=math.floor(x_min_chip), xmax=math.floor(x_max_chip)-1, ymin=math.floor(y_min_chip), ymax=math.floor(y_max_chip)-1)
             image_chip = image_tile[bounds_chip].copy()
             image_chips.append(image_chip)
-
+        
+    logger.info('image_chips',image_chips)
     return image_chips

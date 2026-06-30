@@ -1,0 +1,38 @@
+#!/bin/bash
+##########################
+# SMP Script for CANDIDE #
+##########################
+
+# Receive email when job finishes or aborts
+#SBATCH --mail-user fabi.hervas@gmail.com
+#SBATCH --mail-type END
+# Set a name for the job
+#SBATCH --job-name  im4
+#SBATCH --output /home/hervas/fhervas/workdir_skills/MultiBand_ImSim/scripts/log4
+# Join output and errors in one file
+# Set maximum computing time (e.g. 5min)
+#SBATCH --time=20:00:00
+# Request number of cores
+#SBATCH --nodes=1 
+#SBATCH --cpus-per-task=48 
+#SBATCH --ntasks-per-node=1
+
+# Full path to environment
+#export SPENV="$HOME/.conda/envs/shapepipe"
+#export SPDIR="$HOME/shapepipe"
+
+# Activate conda environment
+module load intelpython/3-2020.4
+export HDF5_USE_FILE_LOCKING="FALSE"
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+source activate wlenv
+cd /home/hervas/fhervas/workdir_skills/MultiBand_ImSim/
+# Run ShapePipe using full paths to executables
+srun python modules/Run.py 2 -c scripts/config_UNIONS_to_im_swarp_4.ini  --sep_running_log
+# Return exit code
+exit 0
+~                                                                                                                                                                                            
+~                                                                                                                                                                                            
+~                                                                                                                                                                                            
+~                                                                                                                                                                                            
+"candide_smp.sh" 31L, 695C                                                                                                                                                 31,1          All

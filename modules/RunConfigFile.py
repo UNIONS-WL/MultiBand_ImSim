@@ -24,6 +24,7 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
                                     empty_lines_in_values=False,
                                     interpolation=configparser.ExtendedInterpolation())
     ## existence
+    print('config parse',config)
     try:
         config.read(config_file)
     except TypeError:
@@ -238,8 +239,9 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
                         'mag_name_list': [x.strip() for x in config_gal.get('mag_name_list').split(',')],
                         'RaDec_names': [x.strip() for x in config_gal.get('RaDec_names').split(',')],
                         'shape_names': [x.strip() for x in config_gal.get('shape_names').split(',')],
-                        'z_name': config_gal.get('z_name')}
-
+                        'z_name': config_gal.get('z_name'),
+                        'shape_method': config_gal.get('shape_method')}
+        print('gal_configs keys',gal_configs.keys())
         ### grid size 
         grid_size = config_gal.get('grid_size')
         if not grid_size:
@@ -287,12 +289,14 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
     # === swarp images
     if ('2' in taskIDs) or ('all' in taskIDs):
         config_swarp = config['SWarp']
-        swarp_configs = {'cmd': config_swarp.get('cmd'),
+        swarp_configs = {'manual_tile_centers':config_swarp.get('manual_tile_centers'),
+                         'cmd': config_swarp.get('cmd'),
                          'config_files': [os.path.join(config_dir, x.strip()) for x in config_swarp.get('config_files').split(',')],
                          'bands_group': re.findall(r'\[([^]]+)', config_swarp.get('bands_group')),
                          'image_label_list': [x.strip() for x in config_swarp.get('image_label_list').split(',')],
                          'only_resamples': [bool(distutils.util.strtobool(x.strip())) for x in config_swarp.get('only_resamples').split(',')],
-                         'clean_up_levels': [int(x.strip()) for x in config_swarp.get('clean_up_levels').split(',')]}
+                         'clean_up_levels': [int(x.strip()) for x in config_swarp.get('clean_up_levels').split(',')],
+                         'tile_centers' :config_swarp.get('tile_centers')}
 
         ### legitimate check
         if not shutil.which(swarp_configs['cmd']):
@@ -318,7 +322,8 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
                         'filter_file': os.path.join(config_dir, config_sex.get('filter_file')),
                         'starNNW_file': os.path.join(config_dir, config_sex.get('starNNW_file')),
                         'checkimage_type': config_sex.get('checkimage_type'),
-                        'clean_up_level': config_sex.getint('clean_up_level')}
+                        'clean_up_level': config_sex.getint('clean_up_level'),
+                        'tile_centers' :config_sex.get('tile_centers')}
 
         ### legitimate check
         if not shutil.which(sex_configs['cmd']):

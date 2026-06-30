@@ -26,7 +26,7 @@ def SwarpImage(image_in, swarp_config_file,
                     only_resample=False, contain_wei_ima=True,
                     running_log=True, log_dir=None,
                     swarp_path='swarp', NTHREADS=0,
-                    clean_up_level=0):
+                    clean_up_level=0,ra_dec_centers=None):
     """
     SWarp for coadding or resampling.
         only_resample: set to True
@@ -82,11 +82,18 @@ def SwarpImage(image_in, swarp_config_file,
         cmd.extend(['-c', swarp_config_file,
             '-RESAMPLE_DIR', RESAMPLE_DIR])
         logger.info('Running SWarp for only resampling...')
+    if ra_dec_centers:
+        cmd.extend(['-c', swarp_config_file,
+            '-RESAMPLE_DIR', RESAMPLE_DIR, '-CENTER ', str(ra_dec_centers[0]+','+ra_dec_centers[1]),
+            '-IMAGEOUT_NAME', image_out, '-WEIGHTOUT_NAME', image_out.replace('.fits', '.weight.fits')])
+        logger.info('Running SWarp for coadding...')
+        logger.info('Running SWarp for coadding... with cmd',image_out,str(ra_dec_centers[0]+','+ra_dec_centers[1]))
     else:
         cmd.extend(['-c', swarp_config_file,
             '-RESAMPLE_DIR', RESAMPLE_DIR,
             '-IMAGEOUT_NAME', image_out, '-WEIGHTOUT_NAME', image_out.replace('.fits', '.weight.fits')])
         logger.info('Running SWarp for coadding...')
+
 
     # contain weight images or not
     if contain_wei_ima:

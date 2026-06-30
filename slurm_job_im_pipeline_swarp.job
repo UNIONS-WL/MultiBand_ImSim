@@ -1,0 +1,42 @@
+#!/bin/bash
+
+##########################
+# SMP Script for CANDIDE #
+##########################
+
+# Receive email when job finishes or aborts
+# Set a name for the job
+#SBATCH --job-name  im1
+# Join output and errors in one file
+# Set maximum computing time (e.g. 5min)
+#SBATCH --time=20:00:00
+#SBATCH --output="log_swarp"
+# Request number of cores
+#SBATCH --nodes=1 
+#SBATCH --cpus-per-task=48 
+#SBATCH --ntasks-per-node=1
+#SBATCH --partition=comp,pscomp
+#SBATCH --mem=0 
+# Full path to environment
+#export SPENV="$HOME/.conda/envs/shapepipe"
+#export SPDIR="$HOME/shapepipe"
+
+# Activate conda environment
+module load intelpython/3-2020.4
+source activate wlenv
+cd /home/hervas/fhervas/workdir_skills/MultiBand_ImSim/
+# Run ShapePipe using full paths to executables
+export HDF5_USE_FILE_LOCKING="FALSE"
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+echo $config
+echo config_UNIONS_to_im_small_$config.ini
+python modules/Run.py 2 --runTag $tag_run --threads 4  --rng_seed $seed\
+ --cosmic_shear $e1 $e2 -c scripts/config_UNIONS_to_im_swarp_$config.ini --sep_running_log
+# Return exit code
+#python modules/Run.py 2 --runTag 1p2z_1  --threads 4  --rng_seed "16"  --cosmic_shear "0.0' "0.0" -c scripts/config_UNIONS_to_im_swarp_1.ini --sep_running_log
+exit 0
+~                                                                                                                                                                                            
+~                                                                                                                                                                                            
+~                                                                                                                                                                                            
+~                                                                                                                                                                                            
+"candide_smp.sh" 31L, 695C                                                                                                                                                 31,1          All

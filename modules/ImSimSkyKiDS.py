@@ -87,7 +87,8 @@ def _PSFNoisySkyImages_KiDS_sameExpo(para_list):
     if band == 'u':
         n_exposures = 4
     elif band in ['g', 'r', 'i', 'i1', 'i2']:
-        n_exposures = 5
+        #n_exposures = 5
+        n_exposures = 1
     else:
         raise Exception(f'{band} is not in OmegaCAM! Cannot use KiDS_sameExpo!')
 
@@ -165,7 +166,7 @@ def _PSFNoisySkyImages_KiDS_sameExpo(para_list):
 
                 chip_dir_tmp = os.path.join(outpath_dir, f'chips_tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}')
                 n_files = len(glob.glob(os.path.join(chip_dir_tmp, f'exp{id_exposure}chip_*.fits')))
-                if n_files == 32:
+                if n_files == 44:
                     logger.debug(f'chips already exist for rot{gal_rotation_angle:.0f} expo{id_exposure}.')
                 else:
                     image_tile = galsim.fits.read(outpath_image_name)
@@ -228,7 +229,8 @@ def _PSFNoisySkyImages_KiDS_sameExpo(para_list):
         RA_max = np.amax(RA_gals)
         DEC_min = np.amin(DEC_gals)
         DEC_max = np.amax(DEC_gals)
-        canvas = ObjModule.SimpleCanvas(RA_min, RA_max, DEC_min, DEC_max, pixel_scale)
+        logger.info('Setting canvas tile_label', tile_label)
+        canvas = ObjModule.SimpleCanvas(RA_min, RA_max, DEC_min, DEC_max, pixel_scale,tile_label)
         del RA_gals, DEC_gals, RA_min, RA_max, DEC_min, DEC_max
 
         # star image
@@ -346,13 +348,15 @@ def _PSFNoisySkyImages_KiDS_singleExpo(para_list):
 
         psf_fits_file = psf_info[1]
 
-        psf_paras = (psf_fits_file, pixel_scale, (0.5, 0.5))
+        #psf_paras = (psf_fits_file, pixel_scale, (0.5, 0.5))
+        print("no_psf_shift")
+        psf_paras = (psf_fits_file, pixel_scale, (0., 0.))
         psf_func = PSFModule.loadPixelPSF
         psf_pixel = True
 
     # outpath
     outpath_image_name_list = [os.path.join(outpath_dir, f'chips_tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}', f'exp{id_exposure}chip_{i_chip+1}OFCS.fits')
-                                for i_chip in range(32)]
+                                for i_chip in range(44)]
 
     if (outpath_PSF_basename is not None):
         outpath_PSF_name = outpath_PSF_basename + f'_rot{gal_rotation_angle:.0f}_expo{id_exposure}.fits'
@@ -445,8 +449,10 @@ def _PSFNoisySkyImages_KiDS_singleExpo(para_list):
         if gals_info_band[1] is not None:
             RA_gals = np.hstack([RA_gals, gals_info_band[1]['RA'].values])
             DEC_gals = np.hstack([DEC_gals, gals_info_band[1]['DEC'].values])
-        RA0 = (np.amax(RA_gals) + np.amin(RA_gals))/2.
-        DEC0 = (np.amax(DEC_gals) + np.amin(DEC_gals))/2.
+        #RA0 = (np.amax(RA_gals) + np.amin(RA_gals))/2.
+        #DEC0 = (np.amax(DEC_gals) + np.amin(DEC_gals))/2.
+        RA0 = float(tile_label[0:7]) 
+        DEC0 = float(tile_label[8:15])
         canvases_list = KiDSModule.getKiDScanvases(RA0, DEC0, id_exposure=id_exposure)
         del RA_gals, DEC_gals, RA0, DEC0
 
@@ -458,6 +464,7 @@ def _PSFNoisySkyImages_KiDS_singleExpo(para_list):
 
                 # chip id
                 i_chip = int(re.search(r'chip_(\d+)', outpath_image_name).group(1)) - 1
+                logger.info('i_chip in IMSimSKyKiDS',i_chip)
                 ## get the canvas accordingly
                 canvas = canvases_list[i_chip]
 
@@ -528,7 +535,7 @@ def _PSFNoisySkyImages_KiDS_varChips(para_list):
         # paras
         seeing_chips, beta_chips, psf_e_chips = psf_info_chips[1:]
         psf_paras_chips = []
-        for i_chip in range(32):
+        for i_chip in range(44):
             seeing = seeing_chips[i_chip]
             beta = beta_chips[i_chip]
             psf_e = [psf_e_chips[0][i_chip], psf_e_chips[1][i_chip]]
@@ -549,7 +556,7 @@ def _PSFNoisySkyImages_KiDS_varChips(para_list):
         # paras
         lam_chips, diam_chips, obscuration_chips, psf_e_chips = psf_info_chips[1:]
         psf_paras_chips = []
-        for i_chip in range(32):
+        for i_chip in range(44):
             lam = lam_chips[i_chip]
             diam = diam_chips[i_chip]
             obscuration = obscuration_chips[i_chip]
@@ -571,13 +578,14 @@ def _PSFNoisySkyImages_KiDS_varChips(para_list):
         # paras
         psf_fits_file_chips = psf_info_chips[1]
         psf_paras_chips = []
-        for i_chip in range(32):
-            psf_paras_chips.append((psf_fits_file_chips[i_chip], pixel_scale, (0.5, 0.5)))
+        for i_chip in range(44):
+            print("no_psf_shift")
+            psf_paras_chips.append((psf_fits_file_chips[i_chip], pixel_scale, (0., 0.)))
         del psf_fits_file_chips, psf_info_chips
 
     # outpath
     outpath_image_name_list = [os.path.join(outpath_dir, f'chips_tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}', f'exp{id_exposure}chip_{i_chip+1}OFCS.fits')
-                                for i_chip in range(32)]
+                                for i_chip in range(44)]
 
     if (outpath_PSF_basename is not None):
         raise Exception('varChips mode does not support PSF map!')
@@ -612,7 +620,7 @@ def _PSFNoisySkyImages_KiDS_varChips(para_list):
             ## add a card for pixel scale
             hdu_list[0].header['GS_SCALE'] = (pixel_scale, 'GalSim image scale')
             # produce 32 psf images
-            for i_chip in range(32):
+            for i_chip in range(44):
                 psf_paras = psf_paras_chips[i_chip]
 
                 PSF = psf_func(*psf_paras)
@@ -645,8 +653,11 @@ def _PSFNoisySkyImages_KiDS_varChips(para_list):
         if gals_info_band[1] is not None:
             RA_gals = np.hstack([RA_gals, gals_info_band[1]['RA'].values])
             DEC_gals = np.hstack([DEC_gals, gals_info_band[1]['DEC'].values])
-        RA0 = (np.amax(RA_gals) + np.amin(RA_gals))/2.
-        DEC0 = (np.amax(DEC_gals) + np.amin(DEC_gals))/2.
+        #RA0 = (np.amax(RA_gals) + np.amin(RA_gals))/2.
+        #DEC0 = (np.amax(DEC_gals) + np.amin(DEC_gals))/2.
+        RA0 = float(tile_label[0:7]) 
+        DEC0 = float(tile_label[8:15])
+        logger.info('var chips, center',RA0,DEC0)
         canvases_list = KiDSModule.getKiDScanvases(RA0, DEC0, id_exposure=id_exposure)
         del RA_gals, DEC_gals, RA0, DEC0
 

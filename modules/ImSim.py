@@ -209,13 +209,18 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
         else:
             dec_min = np.arcsin(dec_sin_min * np.pi / 180.) * 180. / np.pi
             dec_max = np.arcsin(dec_sin_max * np.pi / 180.) * 180. / np.pi
+            #FHP, not convinced by the dec_min,max above
+            dec_min = dec_sin_min
+            dec_max = dec_sin_max
 
         if gal_position_type[0] == 'true_allsky':
             ra_min = ra_cen -area_ra/2
             ra_max = ra_cen+ area_ra/2
-            dec_sin_min = dec_cen + area_dec/2
+            dec_sin_min = dec_cen - area_dec/2
             dec_sin_max = dec_cen + area_dec/2
-            print('Using galaxies in the intervals, ra: ',ra_min,' ',ra_max,' dec ',dec_sin_min,' ',dec_sin_max)
+            dec_min = dec_cen - area_dec/2
+            dec_max = dec_cen + area_dec/2
+            print('Using galaxies in the intervals, ra: ',ra_min,' ',ra_max,' dec ',dec_sin_min,' ',dec_sin_max, 'dec_min',dec_min,'dec_max',dec_max)
 
         # select galaxies
         ## careful one
@@ -347,10 +352,16 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
 
             elif star_position_type == 'true':
                 # use true star location
-                mask_ra = (stars_info['RA'] >= ra_min) & (stars_info['RA'] < ra_max)
-                mask_dec = (stars_info['DEC'] >= dec_min) & (stars_info['DEC'] < dec_max)
+                #mask_ra = (stars_info['RA'] >= ra_min) & (stars_info['RA'] < ra_max)
+                #mask_dec = (stars_info['DEC'] >= dec_min) & (stars_info['DEC'] < dec_max)
+                mask_ra = (stars_info['RA'] >= 0) & (stars_info['RA'] < 360)
+                mask_dec = (stars_info['DEC'] >= 0) & (stars_info['DEC'] < 90)
+                print("initial star is load",len(mask_ra))
+                print('using stars ',np.count_nonzero((mask_ra & mask_dec)))
+                print('using stars in ',ra_min,ra_max,dec_min,dec_max)
+                print('stars at ',stars_info['RA'] ,stars_info['DEC'] )
                 stars_info_selec = stars_info[mask_ra & mask_dec].copy()
-                stars_info_selec.reset_index(drop=True, inplace=True)
+                #stars_info_selec.reset_index(drop=True, inplace=True) #FHP comment test for allstars
 
             else:
                 raise Exception(f'Unsupported star_position_type: {star_position_type} !')
@@ -493,24 +504,24 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
                         if psf_type.lower() == 'pixelima':
                             fits_chips = [os.path.join(noise_info_tile[f'PixelIma_dir_{band}'], 
                                                     f'psfIma_exp{i_expo}_chip{i_chip}.fits') 
-                                            for i_chip in range(32)]
+                                            for i_chip in range(44)]
                             psf_info_chips = [psf_type, fits_chips]
                             del fits_chips
                         else:
                             if psf_type.lower() == 'moffat':
-                                seeing_chips = [noise_info_tile[f'seeing_{band}_expo{i_expo}_chip{i_chip}'] for i_chip in range(32)]
-                                beta_chips = [noise_info_tile[f'beta_{band}_expo{i_expo}_chip{i_chip}'] for i_chip in range(32)]
+                                seeing_chips = [noise_info_tile[f'seeing_{band}_expo{i_expo}_chip{i_chip}'] for i_chip in range(44)]
+                                beta_chips = [noise_info_tile[f'beta_{band}_expo{i_expo}_chip{i_chip}'] for i_chip in range(44)]
                                 psf_info_chips = [psf_type, seeing_chips, beta_chips]
                                 del seeing_chips, beta_chips
                             elif psf_type.lower() == 'airy':
-                                lam_chips = [noise_info_tile[f'lam_{band}_expo{i_expo}_chip{i_chip}'] for i_chip in range(32)]
-                                diam_chips = [noise_info_tile[f'diam_{band}_expo{i_expo}_chip{i_chip}'] for i_chip in range(32)]
-                                obscuration_chips = [noise_info_tile[f'obscuration_{band}_expo{i_expo}_chip{i_chip}'] for i_chip in range(32)]
+                                lam_chips = [noise_info_tile[f'lam_{band}_expo{i_expo}_chip{i_chip}'] for i_chip in range(44)]
+                                diam_chips = [noise_info_tile[f'diam_{band}_expo{i_expo}_chip{i_chip}'] for i_chip in range(44)]
+                                obscuration_chips = [noise_info_tile[f'obscuration_{band}_expo{i_expo}_chip{i_chip}'] for i_chip in range(44)]
                                 psf_info_chips = [psf_type, lam_chips, diam_chips, obscuration_chips]
                                 del lam_chips, diam_chips, obscuration_chips
                             ## psf e
-                            psf_e_chips = [[noise_info_tile[f'psf_e1_{band}_expo{i_expo}_chip{i_chip}'] for i_chip in range(32)], 
-                                                [noise_info_tile[f'psf_e2_{band}_expo{i_expo}_chip{i_chip}'] for i_chip in range(32)]]
+                            psf_e_chips = [[noise_info_tile[f'psf_e1_{band}_expo{i_expo}_chip{i_chip}'] for i_chip in range(44)], 
+                                                [noise_info_tile[f'psf_e2_{band}_expo{i_expo}_chip{i_chip}']    for i_chip in range(44)]]
                             psf_info_chips.append(psf_e_chips)
                             del psf_e_chips
 

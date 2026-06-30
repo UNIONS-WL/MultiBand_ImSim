@@ -22,6 +22,7 @@ import pandas as pd
 import multiprocessing as mp
 
 from astropy.table import Table
+from astropy.io import fits 
 
 import BPZ
 import GAaP
@@ -134,6 +135,7 @@ if __name__ == "__main__":
         logger.info('Pipeline end.')
         sys.exit()
     ## else: get config info
+    print('config_file in Run.py',config_file)
     configs_dict = RunConfigFile.ParseConfig(config_file, taskIDs, run_tag, running_log)
 
     # # ++++++++++++++ Running tasks
@@ -169,6 +171,7 @@ if __name__ == "__main__":
                         only_labels=True,
                         noise_psf_basenames=noise_psf_basenames, label_basename=label_basename)
     tile_labels = tile_labels[:N_tiles]
+    
     logger.info(f'Targeted tiles: {tile_labels}')
 
     # 1: simulate images
@@ -211,10 +214,12 @@ if __name__ == "__main__":
             # diffexpo ?
             multiple_exposures_list = [x.lower()=='diffexpo' for x in configs_dict['imsim']['image_type_list']]
             ## KiDS u only 4 exposures
-            N_exposures_list = [4 if x=='u' else 5 for x in configs_dict['imsim']['bands']]
+            #FHP choose violence
+            #N_exposures_list = [4 if x=='u' else 5 for x in configs_dict['imsim']['bands']]
+            N_exposures_list = [1 for x in configs_dict['imsim']['bands']]
             # varChips ?
             varChips_list = [x.lower()=='varchips' for x in configs_dict['imsim']['image_type_list']]
-            N_chips_list = [32] * len(varChips_list)
+            N_chips_list = [44] * len(varChips_list)
         else:
             multiple_exposures_list = None
             N_exposures_list = None
@@ -257,6 +262,7 @@ if __name__ == "__main__":
                             configs_dict['gal']['id_name'], configs_dict['gal']['detection_mag_name'], configs_dict['gal']['mag_name_list'],
                             configs_dict['gal']['RaDec_names'],
                             configs_dict['gal']['shape_names'],
+                            configs_dict['gal']['shape_method'], #FHP
                             configs_dict['gal']['z_name'],
                             mag_cut=configs_dict['gal']['mag_cut'], size_cut=configs_dict['gal']['size_cut'],
                             g_columns=g_columns)
@@ -337,6 +343,7 @@ if __name__ == "__main__":
         logger.info(f'  NOTE: each processes of swarp takes {swarp_cores} cores')
         work_pool = mp.Pool(processes=N_swarp)
         proc_list = []
+        logger.info(f'setting manually the tile centers{configs_dict["swarp"]["manual_tile_centers"]}')
         for i_group, swarp_config in enumerate(configs_dict['swarp']['config_files']):
 
             swarp_bands = configs_dict['swarp']['bands_group'][i_group]
@@ -350,93 +357,216 @@ if __name__ == "__main__":
             out_dir_tmp = os.path.join(configs_dict['work_dirs']['ima'], configs_dict['swarp']['image_label_list'][i_group])
             if configs_dict['imsim']['PSF_map'][0]:
                 out_dir_psf_tmp =  os.path.join(out_dir_tmp, 'psf_map')
+            if configs_dict['swarp']['manual_tile_centers']=='False': #This is the default code
 
-            for tile_label in tile_labels:
+                for tile_label in tile_labels:
 
-                if (needed_tile is not None) and (tile_label!=needed_tile):
-                    logger.warning(f'tile {tile_label} is skipped because it is not the selected one!')
-                    continue
+                    if (needed_tile is not None) and (tile_label!=needed_tile):
+                        logger.warning(f'tile {tile_label} is skipped because it is not the selected one!')
+                        continue
 
-                for band in swarp_bands:
+                    for band in swarp_bands:
 
-                    for gal_rotation_angle in configs_dict['imsim']['gal_rotation_angles']:
+                        for gal_rotation_angle in configs_dict['imsim']['gal_rotation_angles']:
 
-                        # original images
-                        ## simply resampling
-                        image_in = os.path.join(in_dir_tmp, f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}.fits')
-                        if not os.path.isfile(image_in):
-                            ## exposures
-                            image_in = glob.glob(os.path.join(in_dir_tmp, f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}_expo?.fits'))
-                            if not image_in:
-                                ## chips
-                                # image_in = os.path.join(in_dir_tmp, f'chips_tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}', '*.fits')
-                                image_in = glob.glob(os.path.join(in_dir_tmp, f'chips_tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}', '*.fits'))
-                                ## avoid weight images
-                                image_in = [tmp for tmp in image_in if '.weight.' not in tmp]
+                            # original images
+                            ## simply resampling
+                            image_in = os.path.join(in_dir_tmp, f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}.fits')
+                            if not os.path.isfile(image_in):
+                                ## exposures
+                                image_in = glob.glob(os.path.join(in_dir_tmp, f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}_expo?.fits'))
+                                if not image_in:
+                                    ## chips
+                                    # image_in = os.path.join(in_dir_tmp, f'chips_tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}', '*.fits')
+                                    image_in = glob.glob(os.path.join(in_dir_tmp, f'chips_tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}', '*.fits'))
+                                    ## avoid weight images
+                                    image_in = [tmp for tmp in image_in if '.weight.' not in tmp]
 
-                        # check exsitence
-                        if isinstance(image_in, str) and (not os.path.isfile(image_in)):
-                            raise Exception(f'{image_in} not found, make sure image is successfully simulated!')
-                        elif (not image_in):
-                            raise Exception(f'No images found for tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}, \n\
-                                    make sure images are successfully simulated!')
+                            # check exsitence
+                            if isinstance(image_in, str) and (not os.path.isfile(image_in)):
+                                raise Exception(f'{image_in} not found, make sure image is successfully simulated!')
+                            elif (not image_in):
+                                raise Exception(f'No images found for tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}, \n\
+                                        make sure images are successfully simulated!')
 
-                        # check weight images
-                        if isinstance(image_in, str):
-                            if os.path.isfile(image_in.replace('.fits', '.weight.fits')):
-                                contain_wei_ima = True
+                            # check weight images
+                            if isinstance(image_in, str):
+                                if os.path.isfile(image_in.replace('.fits', '.weight.fits')):
+                                    contain_wei_ima = True
+                                else:
+                                    contain_wei_ima = False
                             else:
-                                contain_wei_ima = False
-                        else:
-                            if os.path.isfile(image_in[0].replace('.fits', '.weight.fits')):
-                                contain_wei_ima = True
-                            else:
-                                contain_wei_ima = False
+                                if os.path.isfile(image_in[0].replace('.fits', '.weight.fits')):
+                                    contain_wei_ima = True
+                                else:
+                                    contain_wei_ima = False
 
-                        ### run
-                        # place for intermediate images
-                        ## NOTE: swarp resampled images will have the same names for different runs
-                        ######## this will confuse swarp in parallel
-                        ######## therefore, using different tmp directory
-                        RESAMPLE_DIR = os.path.join(tmp_dir_tmp, configs_dict['swarp']['image_label_list'][i_group],
-                                    f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}')
-                        if (os.path.exists(RESAMPLE_DIR)):
-                            shutil.rmtree(RESAMPLE_DIR)
-                        image_out = os.path.join(out_dir_tmp, f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}.fits')
-                        proc = work_pool.apply_async(func=Astromatic.SwarpImage,
-                                        args=(image_in, swarp_config,
-                                            image_out, RESAMPLE_DIR,
-                                            only_resample, contain_wei_ima,
-                                            running_log, log_dir_tmp,
-                                            configs_dict['swarp']['cmd'], swarp_cores,
-                                            clean_up_level_tmp))
-                        proc_list.append(proc)
+                            ### run
+                            # place for intermediate images
+                            ## NOTE: swarp resampled images will have the same names for different runs
+                            ######## this will confuse swarp in parallel
+                            ######## therefore, using different tmp directory 
+            
+                            RESAMPLE_DIR = os.path.join(tmp_dir_tmp, configs_dict['swarp']['image_label_list'][i_group],
+                                        f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}')
+                            if (os.path.exists(RESAMPLE_DIR)):
+                                shutil.rmtree(RESAMPLE_DIR)
+                            image_out = os.path.join(out_dir_tmp, f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}.fits')
+                            log_dir_tmp
+                            proc = work_pool.apply_async(func=Astromatic.SwarpImage,
+                                            args=(image_in, swarp_config,
+                                                image_out, RESAMPLE_DIR,
+                                                only_resample, contain_wei_ima,
+                                                running_log, log_dir_tmp,
+                                                configs_dict['swarp']['cmd'], swarp_cores, clean_up_level_tmp ))
+                            proc_list.append(proc)
 
-                        ### psf map
-                        if configs_dict['imsim']['PSF_map'][0]:
-                            try:
-                                image_in_psf = os.path.join(in_dir_psf_tmp, os.path.basename(image_in))
-                                psf_map_existence = os.path.isfile(image_in_psf)
-                            except TypeError:
-                                image_in_psf = [os.path.join(in_dir_psf_tmp, os.path.basename(image_in_tmp)) for image_in_tmp in image_in]
-                                psf_map_existence = os.path.isfile(image_in_psf[0])
+                            ### psf map
+                            if configs_dict['imsim']['PSF_map'][0]:
+                                try:
+                                    image_in_psf = os.path.join(in_dir_psf_tmp, os.path.basename(image_in))
+                                    psf_map_existence = os.path.isfile(image_in_psf)
+                                except TypeError:
+                                    image_in_psf = [os.path.join(in_dir_psf_tmp, os.path.basename(image_in_tmp)) for image_in_tmp in image_in]
+                                    psf_map_existence = os.path.isfile(image_in_psf[0])
 
-                            #### run
-                            if psf_map_existence:
-                                RESAMPLE_DIR = os.path.join(tmp_dir_tmp, configs_dict['swarp']['image_label_list'][i_group],
-                                                    'psf_map',
-                                                    f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}')
-                                if (os.path.exists(RESAMPLE_DIR)):
-                                    shutil.rmtree(RESAMPLE_DIR)
-                                image_out = os.path.join(out_dir_psf_tmp, f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}.fits')
-                                proc = work_pool.apply_async(func=Astromatic.SwarpImage,
-                                                args=(image_in_psf, swarp_config,
-                                                    image_out, RESAMPLE_DIR,
-                                                    only_resample, contain_wei_ima,
-                                                    running_log, log_dir_tmp,
-                                                    configs_dict['swarp']['cmd'], swarp_cores,
-                                                    clean_up_level_tmp))
-                                proc_list.append(proc)
+                                #### run
+                                if psf_map_existence:
+                                    RESAMPLE_DIR = os.path.join(tmp_dir_tmp, configs_dict['swarp']['image_label_list'][i_group],
+                                                        'psf_map',
+                                                        f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}')
+                                    if (os.path.exists(RESAMPLE_DIR)):
+                                        shutil.rmtree(RESAMPLE_DIR)
+                                    image_out = os.path.join(out_dir_psf_tmp, f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}.fits')
+                                    proc = work_pool.apply_async(func=Astromatic.SwarpImage,
+                                                    args=(image_in_psf, swarp_config,
+                                                        image_out, RESAMPLE_DIR,
+                                                        only_resample, contain_wei_ima,
+                                                        running_log, log_dir_tmp,
+                                                        configs_dict['swarp']['cmd'], swarp_cores,
+                                                        clean_up_level_tmp))
+                                    proc_list.append(proc)
+            
+                         
+            
+                
+            if configs_dict['swarp']['manual_tile_centers']=='True': # This is the FHP part added for a wider ditther survey
+                logger.info(f'tile_centers almost loaded ') 
+                tile_centers=np.load(configs_dict['swarp']['tile_centers']) #Ra,DEC,tilename
+                logger.info(f'tile_centers loaded {tile_centers})')
+                
+                for tile_indx,tile_name in enumerate(tile_centers[2]):
+                    image_in_all=list()
+                    print('simulating tile',tile_name)
+                    tile_name=str(tile_name) #This is the addition for a large ditther survey
+                 #FHP a list with all images
+                    for tile_label in tile_labels: #What is called tile now corresponds to an exposure actually
+                        
+                        #if (needed_tile is not None) and (tile_label!=needed_tile):
+                        #    logger.warning(f'tile {tile_label} is skipped because it is not the selected one!')
+                        #   continue
+
+                        for band in swarp_bands:
+
+                            for gal_rotation_angle in configs_dict['imsim']['gal_rotation_angles']:
+
+                                # original images
+                                ## simply resampling
+                                image_in = os.path.join(in_dir_tmp, f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}.fits')
+                                logger.info((f'inspecting exposure ',image_in))
+                                if not os.path.isfile(image_in):
+                                    ## exposures
+                                    image_in = glob.glob(os.path.join(in_dir_tmp, f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}_expo?.fits'))
+                                    if not image_in:
+                                        ## chips
+                                        # image_in = os.path.join(in_dir_tmp, f'chips_tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}', '*.fits')
+                                        image_in = glob.glob(os.path.join(in_dir_tmp, f'chips_tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}', '*.fits'))
+                                        ## avoid weight images
+                                        image_in = [tmp for tmp in image_in if '.weight.' not in tmp] #we now need all exposures in image_in
+                                        ra_cen,dec_cen=float(tile_label[0:7]),float(tile_label[8:15])
+                                        for indiv_ccd in image_in:
+                                            ccd_fits=fits.open(indiv_ccd)[0].header
+                                            #print('ccd_fits',ccd_fits)
+                                            ra_ccd_indiv,dec_ccd_indiv=ccd_fits['CRVAL1'],ccd_fits['CRVAL2']
+                                            #if ra_cen>(float(tile_centers[0][tile_indx])-1.1/np.cos(float(tile_centers[1][tile_indx]))) and ra_cen<(float(tile_centers[0][tile_indx])+1.1/np.cos(float(tile_centers[1][tile_indx]))) and dec_cen>(float(tile_centers[1][tile_indx])-1.1) and dec_cen<(float(tile_centers[1][tile_indx])+1.1):
+                                            if ra_ccd_indiv>(float(tile_centers[0][tile_indx])-(0.4/np.cos(float(tile_centers[1][tile_indx])/180.))) and ra_ccd_indiv<(float(tile_centers[0][tile_indx])+(0.4/np.cos(float(tile_centers[1][tile_indx])/180.))) and dec_ccd_indiv>(float(tile_centers[1][tile_indx])-0.4) and dec_ccd_indiv<(float(tile_centers[1][tile_indx])+0.4):
+                                                logger.info((f'accepted images tile_centers ',ra_ccd_indiv,dec_ccd_indiv,float(tile_centers[0][tile_indx]),float(tile_centers[1][tile_indx]))) 
+                                                #FHP
+                                                #image_in_all=image_in_all+image_in
+                                                image_in_all=image_in_all+[indiv_ccd]
+                                        print('using CCDs',len(image_in_all))
+                                # check exsitence
+                                if isinstance(image_in, str) and (not os.path.isfile(image_in)):
+                                    raise Exception(f'{image_in} not found, make sure image is successfully simulated!')
+                                elif (not image_in):
+                                    raise Exception(f'No images found for tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}, \n\
+                                            make sure images are successfully simulated!')
+
+                                # check weight images
+                                if isinstance(image_in, str):
+                                    if os.path.isfile(image_in.replace('.fits', '.weight.fits')):
+                                        contain_wei_ima = True
+                                    else:
+                                        contain_wei_ima = False
+                                else:
+                                    if os.path.isfile(image_in[0].replace('.fits', '.weight.fits')):
+                                        contain_wei_ima = True
+                                    else:
+                                        contain_wei_ima = False
+
+                                ### run
+                                # place for intermediate images
+                                ## NOTE: swarp resampled images will have the same names for different runs
+                                ######## this will confuse swarp in parallel
+                                ######## therefore, using different tmp directory
+
+
+                    #logger.info(f'setting resample dir {tile_centers})')
+                    #logger.info(f' image_in_all {image_in_all})')
+                    RESAMPLE_DIR = os.path.join(tmp_dir_tmp, configs_dict['swarp']['image_label_list'][i_group],
+                                f'tile{tile_name}_band{band}_rot{gal_rotation_angle:.0f}')
+                
+                    if (os.path.exists(RESAMPLE_DIR)):
+                        logger.info((f'removing directory ',image_in_all),RESAMPLE_DIR) 
+                        shutil.rmtree(RESAMPLE_DIR)
+                    image_out = os.path.join(out_dir_tmp, f'tile{tile_name}_band{band}_rot{gal_rotation_angle:.0f}.fits')
+                    logger.info((f'image_out  ',image_out)) 
+                    logger.info((f'images as input ',image_in_all)) 
+                    proc = work_pool.apply_async(func=Astromatic.SwarpImage,
+                                    args=(image_in_all, swarp_config,
+                                        image_out, RESAMPLE_DIR,
+                                        only_resample, contain_wei_ima,
+                                        running_log, log_dir_tmp,
+                                        configs_dict['swarp']['cmd'], swarp_cores,
+                                        clean_up_level_tmp,[tile_centers[0][tile_indx],tile_centers[1][tile_indx]]))
+                    proc_list.append(proc)
+
+                            ### psf map
+                    if configs_dict['imsim']['PSF_map'][0]:
+                        try:
+                            image_in_psf = os.path.join(in_dir_psf_tmp, os.path.basename(image_in))
+                            psf_map_existence = os.path.isfile(image_in_psf)
+                        except TypeError:
+                            image_in_psf = [os.path.join(in_dir_psf_tmp, os.path.basename(image_in_tmp)) for image_in_tmp in image_in]
+                            psf_map_existence = os.path.isfile(image_in_psf[0])
+
+                        #### run
+                        if psf_map_existence:
+                            RESAMPLE_DIR = os.path.join(tmp_dir_tmp, configs_dict['swarp']['image_label_list'][i_group],
+                                                'psf_map',
+                                                f'tile{tile_name}_band{band}_rot{gal_rotation_angle:.0f}')
+                            if (os.path.exists(RESAMPLE_DIR)):
+                                shutil.rmtree(RESAMPLE_DIR)
+                            image_out = os.path.join(out_dir_psf_tmp, f'tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}.fits')
+                            proc = work_pool.apply_async(func=Astromatic.SwarpImage,
+                                            args=(image_in_psf, swarp_config,
+                                                image_out, RESAMPLE_DIR,
+                                                only_resample, contain_wei_ima,
+                                                running_log, log_dir_tmp,
+                                                configs_dict['swarp']['cmd'], swarp_cores,
+                                                clean_up_level_tmp))
+                            proc_list.append(proc)
+
 
         work_pool.close()
         work_pool.join()
@@ -506,8 +636,11 @@ if __name__ == "__main__":
         logger.info(f'Max number of processes for SExtractor: {N_sex}')
         work_pool = mp.Pool(processes=N_sex)
         proc_list = []
+        tile_centers=np.load(configs_dict['sex']['tile_centers'])
+        tile_labels=tile_centers[2]
         for i_tile, tile_label in enumerate(tile_labels):
-
+            tile_label=str(tile_label)
+            print('tile label in loop',tile_label)
             if (needed_tile is not None) and (tile_label!=needed_tile):
                 logger.warning(f'tile {tile_label} is skipped because it is not the selected one!')
                 continue

@@ -29,6 +29,7 @@ def GalInfo(cata_pathfile, primary_band, bands,
             id_name, primary_mag_name, mag_name_list,
             RaDec_names,
             shape_names,
+            shape_method,
             z_name,
             mag_cut=[], size_cut=[],
             g_columns=None):
@@ -53,6 +54,8 @@ def GalInfo(cata_pathfile, primary_band, bands,
         Column names for position information.
     shape_names : list of str [Re, sersic_n, axis_ratio, PA, bulge_fraction, bulge_size, disk_size]
         Not all required, for those missed, simply feed 'none'.
+    shape_method : str
+        defines the shape method to use
     z_name : str
         column name for redshift for saving.
     info_outfile (optional) : str (default: None)
@@ -330,6 +333,8 @@ def StarInfo(cata_pathfile, primary_band, bands,
     elif file_type == 'its':
         with fits.open(cata_pathfile) as hdul:
             cata = hdul[1].data
+    elif file_type == 'npy':
+        cata=np.load(cata_pathfile)
     else:
         raise Exception(f'Not supported file type! {cata_pathfile}')
     logger.info(f'star_cata: {cata_pathfile}')
@@ -358,7 +363,9 @@ def StarInfo(cata_pathfile, primary_band, bands,
     if RaDec_names is not None:
         ## use true position
         X_stars = cata[RaDec_names[0]] # degree
-        Y_stars = cata[RaDec_names[0]] # degree
+        #Y_stars = cata[RaDec_names[0]] # degree #FHP
+        Y_stars = cata[RaDec_names[1]] # degree
+        print('cata[RaDec_names[1]]',cata[RaDec_names[1]])
     else:
         ## will be set late
         X_stars = np.zeros(Nstar)
