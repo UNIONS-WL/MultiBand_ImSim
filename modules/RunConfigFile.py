@@ -2,7 +2,7 @@
 # @Author: lshuns
 # @Date:   2021-02-03, 15:58:35
 # @Last Modified by:   lshuns
-# @Last Modified time: 2023-01-20 11:51:25
+# @Last Modified time: 2026-09-03 14:20:50
 
 ### module to generate an example configuration file
 
@@ -12,9 +12,80 @@ import shutil
 import logging
 import pathlib
 import configparser
-import distutils.util
+def _strtobool(val):
+    """Convert a string representation of truth to True or False.
+    Replacement for deprecated _strtobool.
+    """
+    val = str(val).strip().lower()
+    if val in ('y', 'yes', 't', 'true', 'on', '1'):
+        return True
+    elif val in ('n', 'no', 'f', 'false', 'off', '0'):
+        return False
+    else:
+        raise ValueError(f"invalid truth value {val!r}")
 
 logger = logging.getLogger(__name__)
+
+def _parse_cross_match(config, imsim_configs, section):
+    """
+    Settings for cross-matching a detection catalogue against the input one.
+
+    Shared by [SExtractor] and [metadetect]: both read the same [CrossMatch]
+    section, so that a run gives the same matching regardless of which one
+    produced the detections.
+    """
+    if 'CrossMatch' not in config:
+        raise Exception(f'cross_match is on for [{section}] but there is no '
+                        '[CrossMatch] section in the configuration file!')
+    config_cross = config['CrossMatch']
+    out = {
+        'mag_faint_cut': config_cross.getfloat('mag_faint_cut'),
+        'save_matched': config_cross.getboolean('save_matched'),
+        'save_false': config_cross.getboolean('save_false'),
+        'save_missed': config_cross.getboolean('save_missed'),
+        'mag_closest': config_cross.getboolean('mag_closest'),
+        'r_max': config_cross.getfloat('r_max'),
+    }
+
+    ### legitimate check
+    if out['mag_faint_cut'] > imsim_configs['casual_mag']:
+        raise Exception("mag_faint_cut has to be brighter than the casual_mag!")
+
+    ### match with TAN projection
+    ##    NOTE: SectionProxy.get* returns the fallback for a missing option, it
+    ##          does not raise, so the default has to be passed explicitly.
+    ##          Without it use_TAN and r_max_pixel came out as None, and a config
+    ##          with use_TAN=True but no r_max_pixel crashed the KDTree query
+    ##          with "must be real number, not NoneType".
+    ## old code is using the sky coordinates
+    out['use_TAN'] = config_cross.getboolean('use_TAN', fallback=False)
+
+    out['r_max_pixel'] = config_cross.getfloat('r_max_pixel', fallback=None)
+    if out['r_max_pixel'] is None:
+        out['r_max_pixel'] = 3.
+        if out['use_TAN']:
+            logger.warning(f'r_max_pixel not found in config, using default value 3 pixels ({section}).')
+
+    return out
+
+def _parse_psf_image(value, default, section):
+    """
+    Which flavour of the PSF stamp a step should use.
+
+    Two stamps are saved for every image (see modules/ImSimPSF.py):
+        'shifted'  the profile is shifted by half a pixel, so it lands on a
+                   pixel centre for an even-sized stamp. lensfit expects this.
+        'centred'  the profile sits on the true centre of the stamp, which is
+                   where GalSim's InterpolatedImage, and hence ngmix/metadetect,
+                   assume it to be.
+    """
+    if value is None:
+        return default
+    value = value.strip().lower()
+    if value not in ('shifted', 'centred'):
+        raise Exception(f"Unsupported psf_image {value} in [{section}]!\n\
+        supported values: shifted, centred")
+    return value
 
 def ParseConfig(config_file, taskIDs, run_tag, running_log):
 
@@ -26,7 +97,7 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
     ## existence
     try:
         config.read(config_file)
-    except TypeError:
+    except (TypeError, FileNotFoundError):
         raise Exception("No configuration file provided! \n"
                         "------> To generate an example file, use `python Run.py 0`.")
 
@@ -96,13 +167,13 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
     imsim_configs = {'survey': config_imsim.get('survey'),
                     'N_tiles': config_imsim.getint('N_tiles'),
                     'gal_rotation_angles': [float(i_r.strip()) for i_r in config_imsim.get('gal_rotation_angles').split(',')],
-                    'PSF_map': [bool(distutils.util.strtobool(x.strip())) for x in config_imsim.get('PSF_map').split(',')],
+                    'PSF_map': [bool(_strtobool(x.strip())) for x in config_imsim.get('PSF_map').split(',')],
                     'mag_zero': config_imsim.getfloat('mag_zero'),
                     'bands': [x.strip() for x in config_imsim.get('band_list').split(',')],
                     'pixel_scale_list': [float(i_p.strip()) for i_p in config_imsim.get('pixel_scale_list').split(',')],
                     'image_type_list': [x.strip() for x in config_imsim.get('image_type_list').split(',')],
-                    'image_chips': [bool(distutils.util.strtobool(x.strip())) for x in config_imsim.get('image_chips').split(',')],
-                    'image_PSF': [bool(distutils.util.strtobool(x.strip())) for x in config_imsim.get('image_PSF').split(',')]}
+                    'image_chips': [bool(_strtobool(x.strip())) for x in config_imsim.get('image_chips').split(',')],
+                    'image_PSF': [bool(_strtobool(x.strip())) for x in config_imsim.get('image_PSF').split(',')]}
 
     ### repeat certain para to match with number of bands
     if len(imsim_configs['PSF_map']) == 1:
@@ -115,6 +186,20 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
         imsim_configs['image_chips'] = imsim_configs['image_chips'] * len(imsim_configs['bands'])
     if len(imsim_configs['image_PSF']) == 1:
         imsim_configs['image_PSF'] = imsim_configs['image_PSF'] * len(imsim_configs['bands'])
+
+    ### image noise
+    image_noise = config_imsim.get('image_noise')
+    if image_noise:
+        imsim_configs['image_noise'] = [
+                                        bool(
+                                            _strtobool(x.strip())
+                                            ) 
+                                            for x in image_noise.split(',')
+                                        ]
+        if len(imsim_configs['image_noise']) == 1:
+            imsim_configs['image_noise'] = imsim_configs['image_noise'] * len(imsim_configs['bands'])
+    else:
+        imsim_configs['image_noise'] = [False] * len(imsim_configs['bands'])
 
     ### detection band 
     detection_band = config_imsim.get('detection_band')
@@ -142,12 +227,16 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
         imsim_configs['casual_mag'] = 99.
 
     ### how to calculate the sky area
-    simple_area = config_imsim.getboolean('simple_area')
-    if simple_area is None:
-        ## old code is using the simple way
-        imsim_configs['simple_area'] = True
-    else:
-        imsim_configs['simple_area'] = simple_area
+    ## old code doesn't have this parameter, default to True
+    imsim_configs['simple_area'] = config_imsim.getboolean('simple_area', fallback=True)
+
+    ### how to cut the sky
+    ## old code doesn't have this parameter, default to True
+    imsim_configs['simple_cut'] = config_imsim.getboolean('simple_cut', fallback=True)
+
+    ### how to perform transformations
+    ## old code doesn't have this parameter, default to True
+    imsim_configs['simple_camera'] = config_imsim.getboolean('simple_camera', fallback=True)
 
     ### collect
     configs_dict['imsim'] = imsim_configs
@@ -242,7 +331,7 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
 
         ### grid size 
         grid_size = config_gal.get('grid_size')
-        if not grid_size:
+        if grid_size:
             gal_configs['grid_size'] = float(grid_size)
         else:
             gal_configs['grid_size'] = 18 #arcsec
@@ -291,8 +380,15 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
                          'config_files': [os.path.join(config_dir, x.strip()) for x in config_swarp.get('config_files').split(',')],
                          'bands_group': re.findall(r'\[([^]]+)', config_swarp.get('bands_group')),
                          'image_label_list': [x.strip() for x in config_swarp.get('image_label_list').split(',')],
-                         'only_resamples': [bool(distutils.util.strtobool(x.strip())) for x in config_swarp.get('only_resamples').split(',')],
+                         'only_resamples': [bool(_strtobool(x.strip())) for x in config_swarp.get('only_resamples').split(',')],
                          'clean_up_levels': [int(x.strip()) for x in config_swarp.get('clean_up_levels').split(',')]}
+
+        ### the images for swarpping
+        ori_image_label_list = config_swarp.get('ori_image_label_list')
+        if ori_image_label_list is not None:
+            swarp_configs['ori_image_label_list'] = [x.strip() for x in ori_image_label_list.split(',')]
+        else:
+            swarp_configs['ori_image_label_list'] = ['original' for _ in config_swarp.get('image_label_list').split(',')]
 
         ### legitimate check
         if not shutil.which(swarp_configs['cmd']):
@@ -330,23 +426,7 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
 
         ### cross match
         if sex_configs['cross_match']:
-            config_cross = config['CrossMatch']
-            sex_configs['mag_faint_cut'] = config_cross.getfloat('mag_faint_cut')
-            sex_configs['save_matched'] = config_cross.getboolean('save_matched')
-            sex_configs['save_false'] = config_cross.getboolean('save_false')
-            sex_configs['save_missed'] = config_cross.getboolean('save_missed')
-            sex_configs['mag_closest'] = config_cross.getboolean('mag_closest')
-            sex_configs['r_max'] = config_cross.getfloat('r_max')
-
-            ### match with TAN projection
-            use_TAN = config_cross.getboolean('use_TAN')
-            if use_TAN is None:
-                ## old code is using the sky coordinates
-                sex_configs['use_TAN'] = False
-            else:
-                sex_configs['use_TAN'] = use_TAN
-
-            sex_configs['r_max_pixel'] = config_cross.getfloat('r_max_pixel')
+            sex_configs.update(_parse_cross_match(config, imsim_configs, 'SExtractor'))
 
         ### collect
         configs_dict['sex'] = sex_configs
@@ -453,6 +533,11 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
         else:
             PSF_configs['folder_prefix'] = 'psf_coeff'
 
+        ### which flavour of the PSF stamp to use (see modules/ImSimPSF.py)
+        ###    lensfit wants the half-pixel-shifted one
+        PSF_configs['psf_image'] = _parse_psf_image(config_PSF.get('psf_image'),
+                                                    'shifted', 'PSFmodelling')
+
         if PSF_method.lower() == 'ima2coeffs':
             config_tmp = config['ima2coeffs']
             PSF_configs['ima2coeffs_dir'] = config_tmp.get('ima2coeffs_dir')
@@ -480,7 +565,7 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
                 raise Exception(f"makeglobalpsf dir {tmp} not found!")
 
         else:
-            raise Exception(f'Unsupported shape measurement method {MS_method}!')
+            raise Exception(f'Unsupported PSF modelling method {PSF_method}!')
 
         ### collect
         configs_dict['PSFmodelling'] = PSF_configs
@@ -549,6 +634,75 @@ def ParseConfig(config_file, taskIDs, run_tag, running_log):
                             MS_configs['lensfit_type']+'_NT'+str(MS_configs['lensfit_cores']))
             if not os.path.isfile(lensfit_run):
                 raise Exception(f"lensfit code {lensfit_run} not found!")
+
+        elif MS_method.lower() == 'ams':
+            config_ams = config['ams']
+            MS_configs['ams_postage_size'] = config_ams.getint('postage_size')
+            MS_configs['ams_sigma_fromSNR_amp'] = config_ams.getfloat('sigma_fromSNR_amp')
+            MS_configs['ams_sigma_fromSNR_index'] = config_ams.getfloat('sigma_fromSNR_index')
+            MS_configs['ams_sigma_fromSNR_base'] = config_ams.getfloat('sigma_fromSNR_base')
+            MS_configs['ams_sigma_intrinsic'] = config_ams.getfloat('sigma_intrinsic')
+            MS_configs['ams_guess_sig'] = config_ams.getfloat('guess_sig')
+            MS_configs['ams_precision'] = config_ams.getfloat('precision')
+            MS_configs['ams_round_moments'] = config_ams.getboolean('round_moments')
+            MS_configs['ams_save_Nstamps'] = config_ams.getint('save_Nstamps')
+
+        elif MS_method.lower() == 'hsm':
+            config_hsm = config['hsm']
+            MS_configs['hsm_postage_size'] = config_hsm.getint('postage_size')
+            MS_configs['hsm_same_PSF'] = config_hsm.getboolean('same_PSF')
+            MS_configs['hsm_sigma_fromSNR_amp'] = config_hsm.getfloat('sigma_fromSNR_amp')
+            MS_configs['hsm_sigma_fromSNR_index'] = config_hsm.getfloat('sigma_fromSNR_index')
+            MS_configs['hsm_sigma_fromSNR_base'] = config_hsm.getfloat('sigma_fromSNR_base')
+            MS_configs['hsm_sigma_intrinsic'] = config_hsm.getfloat('sigma_intrinsic')
+            MS_configs['hsm_shear_est'] = config_hsm.get('shear_est')
+            MS_configs['hsm_recompute_flux'] = config_hsm.get('recompute_flux')
+            MS_configs['hsm_guess_sig_gal'] = config_hsm.getfloat('guess_sig_gal')
+            MS_configs['hsm_guess_sig_PSF'] = config_hsm.getfloat('guess_sig_PSF')
+            MS_configs['hsm_precision'] = config_hsm.getfloat('precision')
+            MS_configs['hsm_save_Nstamps'] = config_hsm.getint('save_Nstamps')
+            ### which flavour of the PSF stamp to use (see modules/ImSimPSF.py)
+            MS_configs['hsm_psf_image'] = _parse_psf_image(config_hsm.get('psf_image'),
+                                                           'centred', 'hsm')
+
+        elif MS_method.lower() == 'metadetect':
+            config_metadetect = config['metadetect']
+            MS_configs['metadetect_same_PSF'] = config_metadetect.getboolean('same_PSF')
+            MS_configs['metadetect_config_files'] = [os.path.join(config_dir, x.strip()) for x in config_metadetect.get('config_files').split(',')]
+            MS_configs['metadetect_pixel_scale_list'] = [float(i_p.strip()) for i_p in config_metadetect.get('pixel_scale_list').split(',')]
+            MS_configs['metadetect_cell_size'] = config_metadetect.getint('cell_size')
+            MS_configs['metadetect_central_size'] = config_metadetect.getint('central_size')
+            MS_configs['metadetect_save_Ncells'] = config_metadetect.getint('save_Ncells')
+            ### which flavour of the PSF stamp to use (see modules/ImSimPSF.py)
+            ###    ngmix places the PSF at the true centre of its stamp, so
+            ###    metadetect needs the centred one
+            MS_configs['metadetect_psf_image'] = _parse_psf_image(
+                                        config_metadetect.get('psf_image'),
+                                        'centred', 'metadetect')
+            ### cross-match the metadetect detections with the input catalogue
+            ###    metadetect does its own detection, so this replaces the
+            ###    cross-match that task 3 does for SExtractor, and it is what
+            ###    lets task 7 attach the input info (see run_task_7_combine)
+            ## absent in older config files, in which case it stays off
+            MS_configs['metadetect_cross_match'] = bool(config_metadetect.getboolean('cross_match'))
+            if MS_configs['metadetect_cross_match']:
+                MS_configs.update({'metadetect_'+k: v for k, v in
+                                   _parse_cross_match(config, imsim_configs, 'metadetect').items()})
+                ## mag_closest resolves a duplicated match by picking the
+                ##    detection whose magnitude is closest to the input one,
+                ##    which assumes the measured magnitude is a TOTAL magnitude
+                ##    like SExtractor's MAG_AUTO. metadetect has no such
+                ##    quantity: its only flux is the weighted-moment
+                ##    <model>_band_flux, which misses the light outside the
+                ##    weight function by ~0.5 mag for the smallest galaxies and
+                ##    ~0.9 mag for the largest. Comparing that with an input
+                ##    total magnitude is biased, and size-dependent, so the
+                ##    duplicates are resolved by distance instead.
+                if MS_configs['metadetect_mag_closest']:
+                    logger.warning(
+                        'mag_closest=True in [CrossMatch] is ignored for metadetect: '
+                        'metadetect reports no total magnitude, only an aperture flux!')
+                MS_configs['metadetect_mag_closest'] = False
 
         else:
             raise Exception(f'Unsupported shape measurement method {MS_method}!')
@@ -712,6 +866,9 @@ image_PSF =             True, False, False, False, False, False, False, False, F
 image_PSF_size =        48                     # (pixels) the size of the saved PSF image\n\
                                                #    it is assumed to be a square\n\
                                                #    default: 48*48 \n\
+image_noise =           False, False, False, False, False, False, False, False, False\n\
+                                               # save noise-only images\n\
+                                               # required by metadetect\n\
 casual_mag =            25                     # up to which magnitude galaxies are casually simulated\n\
                                                #    means: only drawImage for a few, \n\
                                                #        the rest is randomly sampled from those simulated\n\
@@ -734,18 +891,25 @@ mag_zero =              30                     # simulated magnitude zero point\
 simple_area =           False                  # calculate the sky area using \n\
                                                # simple Euclidean geometry (True)\n\
                                                # proper Spherical geometry (False), recommended for |dec|>5\n\
+simple_cut =            True                   # cut the input sky to tiles using \n\
+                                               # simple fixed tile area (True)\n\
+                                               # properly varying tile area (False), recommended for |dec|>10\n\
+simple_camera =         True                   # Camera layout using \n\
+                                               # simple transformations without FoV distortion across chips (True)\n\
+                                               # properly transformations (False), recommended for |dec|>10\n\
 \n\n\
 ################################## SWarp ###################################################\n\
 [SWarp]\n\n\
 # for coadding or resampling\n\
 cmd =                   swarp                  # the executable path to the SWarp code\n\
 config_files =          coadd_theli.swarp, coadd_aw.swarp\n\
-                                               # SWarp configuration files\n\
+                                               # SWarp configuration files in the config folder\n\
                                                # more than one files are supported\n\
                                                #    in which case, more than one treatments are applied\n\
 bands_group =           [r], [u, g, r, i]      # bands to be swarped\n\
                                                # NOTE: the group corresponding to the same config should be surrounded by `[]`\n\
-image_label_list =      THELI, AW              # name to label the swaped results, one to each group\n\
+ori_image_label_list =  original, original     # name for images to be swarpped\n\
+image_label_list =      THELI, AW              # name to label the swarpped results, one to each group\n\
 only_resamples =        False, False           # set it True if only resampling but not coadding\n\
 clean_up_levels =       0, 0                   # clean up level\n\
                                                #    0: none\n\
@@ -764,10 +928,10 @@ pixel_scale =           0.214                  # pixel scale for the image\n\
 cross_match =           True                   # cross-match with the input catalogue\n\
                                                #    in which case, catalogues with match info will be saved\n\
                                                #    see next section for configuration\n\
-config_file =           kids_sims.sex          # SExtractor configuration file\n\
-param_file =            sex_image.param        # SExtractor parameter file\n\
-filter_file =           default.conv           # SExtractor filter file\n\
-starNNW_file =          default.nnw            # SExtractor Neural-Network_Weight table file\n\
+config_file =           kids_sims.sex          # SExtractor configuration file in the config folder\n\
+param_file =            sex_image.param        # SExtractor parameter file in the config folder\n\
+filter_file =           default.conv           # SExtractor filter file in the config folder\n\
+starNNW_file =          default.nnw            # SExtractor Neural-Network_Weight table file in the config folder\n\
 checkimage_type =       NONE                   # can be one of \n\
                                                # NONE, BACKGROUND, MINIBACKGROUND, OBJECTS, SEGMENTATION, APERTURES, FILTERED\n\
 clean_up_level =        0                      # clean up level\n\
@@ -855,6 +1019,10 @@ method =                ima2coeffs             # method for PSF modelling\n\
                                                #    makeglobalpsf\n\
                                                #    ima2coeffs\n\
 folder_prefix =         psf_coeff              # prefix of folders saving PSF models\n\
+psf_image =             shifted                # which saved PSF image to model from\n\
+                                               #    shifted: PSF shifted onto a pixel centre (what lensfit expects)\n\
+                                               #    centred: PSF on the true centre of the stamp\n\
+                                               # only used by the ima2coeffs method\n\
 detection_band =        r                      # band with detection catalogue\n\
 band_list =             r                      # bands being measured\n\
 image_label_list =      original\n\
@@ -884,7 +1052,10 @@ SWARP_CONFIG =          your_dir_to_lensfit/input_files\n\
 [MeasureShape]\n\n\
 method =                lensfit                # method for galaxy shape measurement\n\
                                                # supported method:\n\
-                                               #    lensfit\n\
+                                               #    lensfit (require lensfit source code)\n\
+                                               #    ams (FindAdaptiveMom in GalSim)\n\
+                                               #    hsm (EstimateShear in GalSim)\n\
+                                               #    metadetect (metadetection) \n\
 detection_band =        r                      # band with detection catalogue\n\
 band_list =             r\n\
                                                # bands being measured\n\
@@ -917,6 +1088,61 @@ MEMORY_LIMIT =          30000                  # only relevant for 321\n\
 clean_up_level =        0                      # clean up level\n\
                                                #    0: none\n\
                                                #    1: tmp directory\n\
+\n\n\
+[ams]\n\n\
+postage_size =          48                     # postage size in pixel\n\
+sigma_fromSNR_amp =     1.16                   # amplitude for e_err and SNR relation\n\
+sigma_fromSNR_index =   0.62                   # index for e_err and SNR relation\n\
+sigma_fromSNR_base =    0.05                   # base for e_err and SNR relation\n\
+sigma_intrinsic =       0.27                   # intrinsic sigma e\n\
+guess_sig =             5.0                    # initial guess for the sigma of the object (in pixels)\n\
+precision =             1e-6                   # convergence criterion for the moments\n\
+round_moments =         False                  # use a circular weight function instead of elliptical\n\
+save_Nstamps =          0                      # number of stamps saved for visual check\n\
+\n\n\
+[hsm]\n\n\
+postage_size =          48                     # postage size in pixel\n\
+same_PSF =              True                   # whether all objects have the same PSF\n\
+sigma_fromSNR_amp =     7.26                   # amplitude for e_err and SNR relation\n\
+sigma_fromSNR_index =   0.02                   # index for e_err and SNR relation\n\
+sigma_fromSNR_base =    -6.6                   # base for e_err and SNR relation\n\
+sigma_intrinsic =       0.27                   # intrinsic sigma e\n\
+shear_est =             KSB                    # shear estimation method\n\
+                                               # supported methods:\n\
+                                               #    REGAUSS, LINEAR, BJ, or KSB\n\
+recompute_flux =        NONE                   # recompute the flux or not\n\
+guess_sig_gal =         5.0                    # initial guess for the sigma of the galaxy (in pixels)\n\
+guess_sig_PSF =         3.0                    # initial guess for the sigma of the PSF (in pixels)\n\
+precision =             1e-6                   # convergence criterion for the moments\n\
+save_Nstamps =          0                      # number of stamps saved for visual check\n\
+psf_image =             centred                # which saved PSF image to use\n\
+                                               #    centred: PSF on the true centre of the stamp (default)\n\
+                                               #    shifted: PSF shifted onto a pixel centre (what lensfit expects)\n\
+                                               # HSM measures the PSF centroid itself, so it is insensitive to this\n\
+\n\n\
+[metadetect]\n\n\
+same_PSF =              True                   # whether all objects have the same PSF\n\
+config_files =          metadetect_config.json # metadetect config file in the config folder\n\
+                                               #    file number matches with number of bands to be measured\n\
+pixel_scale_list =      0.214                  # the measured images' pixel scales\n\
+                                               #    should match with what have been simulated\n\
+cell_size =             250                    # the cell size for metadetection\n\
+                                               #    should be even number\n\
+central_size =          150                    # the central size for metadetection\n\
+                                               #    should be even number and smaller than cell size\n\
+save_Ncells =           0                      # number of cells saved for visual check\n\
+psf_image =             centred                # which saved PSF image to use\n\
+                                               #    centred: PSF on the true centre of the stamp (default)\n\
+                                               #    shifted: PSF shifted onto a pixel centre (what lensfit expects)\n\
+                                               # ngmix puts the PSF at the true centre of its stamp, so the\n\
+                                               #    shifted one displaces every measured position by 0.71 pixel\n\
+cross_match =           True                   # cross-match the detections with the input catalogue\n\
+                                               # metadetect does its own detection, so this replaces the\n\
+                                               #    cross-match that task 3 does for SExtractor\n\
+                                               # settings are taken from the [CrossMatch] section, except\n\
+                                               #    mag_closest, which is always False here: metadetect has\n\
+                                               #    no total magnitude to compare with the input one\n\
+                                               # required by task 7 to attach the input info\n\
 \n\n\
 ################################## CombineCata ###################################################\n\
 [CombineCata]\n\n\

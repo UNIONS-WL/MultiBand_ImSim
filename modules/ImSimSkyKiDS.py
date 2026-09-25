@@ -2,7 +2,7 @@
 # @Author: lshuns
 # @Date:   2021-07-22 13:25:05
 # @Last Modified by:   lshuns
-# @Last Modified time: 2023-02-09 16:02:50
+# @Last Modified time: 2026-01-07 16:49:14
 
 ### Everything about KiDS-like images
 __all__ = ['_PSFNoisySkyImages_KiDS_sameExpo', '_PSFNoisySkyImages_KiDS_singleExpo', '_PSFNoisySkyImages_KiDS_varChips']
@@ -25,8 +25,6 @@ import galsim
 import logging
 
 import numpy as np
-import pandas as pd
-
 from astropy.io import fits
 
 logger = logging.getLogger(__name__)
@@ -39,49 +37,35 @@ def _PSFNoisySkyImages_KiDS_sameExpo(para_list):
         Adjoint to RunParallel_PSFNoisySkyImages in ImSim.py
     '''
 
-    (tile_label, band, pixel_scale, rng_seed_band, outpath_image_basename,
-        rms, psf_info,
-        g_cosmic,
-        gals_info_band, gal_rotation_angle,
-        stars_info_band,
-        outpath_PSF_basename, N_PSF, sep_PSF,
-        save_image_chips, save_image_PSF, image_PSF_size,
-        outpath_dir,
-        gal_position_type,
-        g_const) = para_list
+    tile_label = para_list['tile_label']
+    band = para_list['band']
+    pixel_scale = para_list['pixel_scale']
+    rng_seed_band = para_list['rng_seed_band']
+    outpath_image_basename = para_list['outpath_image_basename']
+    rms = para_list['rms']
+    psf_info = para_list['psf_info']
+    g_cosmic = para_list['g_cosmic']
+    gals_info_band = para_list['gals_info_band']
+    gal_rotation_angle = para_list['gal_rotation_angle']
+    stars_info_band = para_list['stars_info_band']
+    outpath_PSF_basename = para_list['outpath_PSF_basename']
+    N_PSF = para_list['N_PSF']
+    sep_PSF = para_list['sep_PSF']
+    save_image_chips = para_list['save_image_chips']
+    save_image_PSF = para_list['save_image_PSF']
+    image_PSF_size = para_list['image_PSF_size']
+    save_image_noise = para_list['save_image_noise']
+    outpath_dir = para_list['outpath_dir']
+    gal_position_type = para_list['gal_position_type']
+    g_const = para_list['g_const']
+    SimpleCam = para_list['SimpleCam']
+
+    assert not save_image_noise, 'KiDS_sameExpo does not support for save noise_image for now!'
 
     logger.info(f'Simulating KiDS_sameExpo image for tile {tile_label} band {band} rot {gal_rotation_angle}...')
 
     # PSF profiles
-    if psf_info[0].lower() == 'moffat':
-
-        seeing, beta, psf_e = psf_info[1:]
-        # if psf e is zero, replace with None
-        if (psf_e[0] == 0.) and (psf_e[1] == 0.):
-            psf_e = None
-
-        psf_paras = (seeing, beta, psf_e)
-        psf_func = PSFModule.MoffatPSF
-        psf_pixel = False
-
-    elif psf_info[0].lower() == 'airy':
-
-        lam, diam, obscuration, psf_e = psf_info[1:]
-        # if psf e is zero, replace with None
-        if (psf_e[0] == 0.) and (psf_e[1] == 0.):
-            psf_e = None
-
-        psf_paras = (lam, diam, obscuration, psf_e)
-        psf_func = PSFModule.AiryPSF
-        psf_pixel = False
-
-    elif psf_info[0].lower() == 'pixelima':
-
-        psf_fits_file = psf_info[1]
-
-        psf_paras = (psf_fits_file, pixel_scale, (0.5, 0.5))
-        psf_func = PSFModule.loadPixelPSF
-        psf_pixel = True
+    psf_func, psf_paras, psf_pixel = PSFModule.parse_psf_info(psf_info, pixel_scale)
 
     # number of exposures
     if band == 'u':
@@ -140,8 +124,10 @@ def _PSFNoisySkyImages_KiDS_sameExpo(para_list):
     ### different rotation has same psf, so only make once
     if (save_image_PSF) and (gal_rotation_angle==0.):
         psf_dir_tmp = os.path.join(outpath_dir, f'psf_tile{tile_label}_band{band}')
+        ## two stamps per exposure: the half-pixel-shifted one for lensfit and
+        ##    the centred one for metadetect/HSM (see ImSimPSF.PSFima)
         n_files = len(glob.glob(os.path.join(psf_dir_tmp, f'expo*.fits')))
-        if n_files == n_exposures:
+        if n_files == 2*n_exposures:
             logger.info('PSF images already exist.')
         else:
             if os.path.exists(psf_dir_tmp):
@@ -149,11 +135,15 @@ def _PSFNoisySkyImages_KiDS_sameExpo(para_list):
             os.mkdir(psf_dir_tmp)
 
             PSF = psf_func(*psf_paras)
-            psf_ima = PSFModule.PSFima(PSF, pixel_scale, size=image_PSF_size, pixelPSF=psf_pixel)
+            psf_ima = PSFModule.PSFima(PSF, pixel_scale, size=image_PSF_size,
+                                pixelPSF=psf_pixel, half_pixel_shift=True)
+            psf_ima_centred = PSFModule.PSFima(PSF, pixel_scale, size=image_PSF_size,
+                                pixelPSF=psf_pixel, half_pixel_shift=False)
 
             for id_exposure in range(n_exposures):
                 outpath_tmp = os.path.join(psf_dir_tmp, f'expo{id_exposure}.fits')
                 psf_ima.write(outpath_tmp)
+                psf_ima_centred.write(PSFModule.psf_centred_path(outpath_tmp))
             logger.debug(f'PSF images saved to {psf_dir_tmp}')
 
     ## chips
@@ -187,12 +177,14 @@ def _PSFNoisySkyImages_KiDS_sameExpo(para_list):
     # +++ background noise
     noise_list = [NoiseModule.GaussianNoise(rms, rng_seed=int(rng_seed_band+120*gal_rotation_angle+94*id_exposure))
                                                         for id_exposure in range(n_exposures)]
+    noise_psf_list = [NoiseModule.GaussianNoise(rms, rng_seed=int(rng_seed_band+120*gal_rotation_angle+94*id_exposure+77))
+                                                        for id_exposure in range(n_exposures)]
 
     # +++ PSF map
     if (False in outpath_PSF_exist_list):
         mag_PSF_2 = 18. # for noise_flux = 2
         mag_PSF = mag_PSF_2 - 2.5*np.log10(rms/2.)
-        image_PSF = PSFModule.PSFmap(PSF, pixel_scale, mag_PSF, 
+        image_PSF = PSFModule.PSFmap(PSF, pixel_scale, mag_PSF,
                             N_PSF=N_PSF, sep_PSF=sep_PSF, rng_seed=rng_seed_band,
                             pixelPSF=psf_pixel)
 
@@ -201,7 +193,7 @@ def _PSFNoisySkyImages_KiDS_sameExpo(para_list):
                 image_PSF_tmp = image_PSF.copy()
 
                 ## noise background
-                noise_tmp = noise_list[i_ima]
+                noise_tmp = noise_psf_list[i_ima]
                 image_PSF_tmp.addNoise(noise_tmp)
 
                 ## save
@@ -305,50 +297,34 @@ def _PSFNoisySkyImages_KiDS_singleExpo(para_list):
         Used for different noise and psf for different exposures
         Adjoint to RunParallel_PSFNoisySkyImages in ImSim.py
     '''
-    (tile_label, band, pixel_scale, rng_seed_band,
-        rms, psf_info,
-        g_cosmic,
-        gals_info_band, gal_rotation_angle,
-        stars_info_band,
-        outpath_PSF_basename, N_PSF, sep_PSF,
-        save_image_PSF, image_PSF_size,
-        outpath_dir,
-        id_exposure,
-        gal_position_type,
-        g_const) = para_list
+    tile_label = para_list['tile_label']
+    band = para_list['band']
+    pixel_scale = para_list['pixel_scale']
+    rng_seed_band = para_list['rng_seed_band']
+    rms = para_list['rms']
+    psf_info = para_list['psf_info']
+    g_cosmic = para_list['g_cosmic']
+    gals_info_band = para_list['gals_info_band']
+    gal_rotation_angle = para_list['gal_rotation_angle']
+    stars_info_band = para_list['stars_info_band']
+    outpath_PSF_basename = para_list['outpath_PSF_basename']
+    N_PSF = para_list['N_PSF']
+    sep_PSF = para_list['sep_PSF']
+    save_image_PSF = para_list['save_image_PSF']
+    image_PSF_size = para_list['image_PSF_size']
+    save_image_noise = para_list['save_image_noise']
+    outpath_dir = para_list['outpath_dir']
+    id_exposure = para_list['id_exposure']
+    gal_position_type = para_list['gal_position_type']
+    g_const = para_list['g_const']
+    SimpleCam = para_list['SimpleCam']
+
+    assert not save_image_noise, 'KiDS_singleExpo does not support for save noise_image for now!'
 
     logger.info(f'Simulating KiDS exposure for tile {tile_label} band {band} expo {id_exposure} rot {gal_rotation_angle}...')
 
     # PSF profiles
-    if psf_info[0].lower() == 'moffat':
-
-        seeing, beta, psf_e = psf_info[1:]
-        # if psf e is zero, replace with None
-        if (psf_e[0] == 0.) and (psf_e[1] == 0.):
-            psf_e = None
-
-        psf_paras = (seeing, beta, psf_e)
-        psf_func = PSFModule.MoffatPSF
-        psf_pixel = False
-
-    elif psf_info[0].lower() == 'airy':
-
-        lam, diam, obscuration, psf_e = psf_info[1:]
-        # if psf e is zero, replace with None
-        if (psf_e[0] == 0.) and (psf_e[1] == 0.):
-            psf_e = None
-
-        psf_paras = (lam, diam, obscuration, psf_e)
-        psf_func = PSFModule.AiryPSF
-        psf_pixel = False
-
-    elif psf_info[0].lower() == 'pixelima':
-
-        psf_fits_file = psf_info[1]
-
-        psf_paras = (psf_fits_file, pixel_scale, (0.5, 0.5))
-        psf_func = PSFModule.loadPixelPSF
-        psf_pixel = True
+    psf_func, psf_paras, psf_pixel = PSFModule.parse_psf_info(psf_info, pixel_scale)
 
     # outpath
     outpath_image_name_list = [os.path.join(outpath_dir, f'chips_tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}', f'exp{id_exposure}chip_{i_chip+1}OFCS.fits')
@@ -396,13 +372,23 @@ def _PSFNoisySkyImages_KiDS_singleExpo(para_list):
     if (save_image_PSF) and (gal_rotation_angle==0.):
         psf_dir_tmp = os.path.join(outpath_dir, f'psf_tile{tile_label}_band{band}')
         psf_ima_file_tmp = os.path.join(psf_dir_tmp, f'expo{id_exposure}.fits')
-        if os.path.isfile(psf_ima_file_tmp):
+        ## the centred counterpart, for metadetect and HSM (see ImSimPSF.PSFima)
+        psf_ima_centred_file_tmp = PSFModule.psf_centred_path(psf_ima_file_tmp)
+        if os.path.isfile(psf_ima_file_tmp) and os.path.isfile(psf_ima_centred_file_tmp):
             logger.info('PSF image already exist.')
         else:
+            os.makedirs(psf_dir_tmp, exist_ok=True)
             PSF = psf_func(*psf_paras)
-            psf_ima = PSFModule.PSFima(PSF, pixel_scale, size=image_PSF_size, pixelPSF=psf_pixel)
+            ## half-pixel-shifted, as lensfit expects
+            psf_ima = PSFModule.PSFima(PSF, pixel_scale, size=image_PSF_size,
+                                pixelPSF=psf_pixel, half_pixel_shift=True)
             psf_ima.write(psf_ima_file_tmp)
-            logger.debug(f'PSF image saved as {psf_ima_file_tmp}')
+            ## on the stamp true centre, as ngmix/metadetect assume
+            psf_ima = PSFModule.PSFima(PSF, pixel_scale, size=image_PSF_size,
+                                pixelPSF=psf_pixel, half_pixel_shift=False)
+            psf_ima.write(psf_ima_centred_file_tmp)
+            logger.debug(f'PSF images saved as {psf_ima_file_tmp} '
+                         f'and {psf_ima_centred_file_tmp}')
 
     ## if all exist, quit
     if (not False in outpath_image_exist_list) and (outpath_PSF_exist):
@@ -412,19 +398,20 @@ def _PSFNoisySkyImages_KiDS_singleExpo(para_list):
     # +++ PSF
     PSF = psf_func(*psf_paras)
 
-    # +++ background noise
-    noise = NoiseModule.GaussianNoise(rms, rng_seed=int(rng_seed_band+120*gal_rotation_angle+94*id_exposure))
+    # +++ background noise base seed
+    noise_base_seed = int(rng_seed_band+120*gal_rotation_angle+94*id_exposure)
 
     # +++ PSF map
     if (not outpath_PSF_exist):
         mag_PSF_2 = 18. # for noise_flux = 2
         mag_PSF = mag_PSF_2 - 2.5*np.log10(rms/2.)
-        image_PSF = PSFModule.PSFmap(PSF, pixel_scale, mag_PSF, 
+        image_PSF = PSFModule.PSFmap(PSF, pixel_scale, mag_PSF,
             N_PSF=N_PSF, sep_PSF=sep_PSF, rng_seed=rng_seed_band,
             pixelPSF=psf_pixel)
 
         ## noise background
-        image_PSF.addNoise(noise)
+        noise_psf = NoiseModule.GaussianNoise(rms, rng_seed=noise_base_seed+223)
+        image_PSF.addNoise(noise_psf)
 
         ## save
         image_PSF.write(outpath_PSF_name)
@@ -447,7 +434,7 @@ def _PSFNoisySkyImages_KiDS_singleExpo(para_list):
             DEC_gals = np.hstack([DEC_gals, gals_info_band[1]['DEC'].values])
         RA0 = (np.amax(RA_gals) + np.amin(RA_gals))/2.
         DEC0 = (np.amax(DEC_gals) + np.amin(DEC_gals))/2.
-        canvases_list = KiDSModule.getKiDScanvases(RA0, DEC0, id_exposure=id_exposure)
+        canvases_list = KiDSModule.getKiDScanvases(RA0, DEC0, SimpleCam, id_exposure=id_exposure)
         del RA_gals, DEC_gals, RA0, DEC0
 
         # all desired images
@@ -482,7 +469,9 @@ def _PSFNoisySkyImages_KiDS_singleExpo(para_list):
                     del image_stars
 
                 ## add noise background
-                image_galaxies.addNoise(noise)
+                ## use a per-chip seed for reproducibility when resuming
+                noise_chip = NoiseModule.GaussianNoise(rms, rng_seed=int(noise_base_seed + i_chip*7))
+                image_galaxies.addNoise(noise_chip)
 
                 ## save the noisy image
                 image_galaxies.write(outpath_image_name)
@@ -505,75 +494,35 @@ def _PSFNoisySkyImages_KiDS_varChips(para_list):
         different chips use different psfs
         Adjoint to RunParallel_PSFNoisySkyImages in ImSim.py
     '''
-    (tile_label, band, pixel_scale, rng_seed_band,
-        rms, psf_info_chips,
-        g_cosmic,
-        gals_info_band, gal_rotation_angle,
-        stars_info_band,
-        outpath_PSF_basename, N_PSF, sep_PSF,
-        save_image_PSF, image_PSF_size,
-        outpath_dir,
-        id_exposure,
-        gal_position_type,
-        g_const) = para_list
+    tile_label = para_list['tile_label']
+    band = para_list['band']
+    pixel_scale = para_list['pixel_scale']
+    rng_seed_band = para_list['rng_seed_band']
+    rms = para_list['rms']
+    psf_info_chips = para_list['psf_info_chips']
+    g_cosmic = para_list['g_cosmic']
+    gals_info_band = para_list['gals_info_band']
+    gal_rotation_angle = para_list['gal_rotation_angle']
+    stars_info_band = para_list['stars_info_band']
+    outpath_PSF_basename = para_list['outpath_PSF_basename']
+    N_PSF = para_list['N_PSF']
+    sep_PSF = para_list['sep_PSF']
+    save_image_PSF = para_list['save_image_PSF']
+    image_PSF_size = para_list['image_PSF_size']
+    save_image_noise = para_list['save_image_noise']
+    outpath_dir = para_list['outpath_dir']
+    id_exposure = para_list['id_exposure']
+    gal_position_type = para_list['gal_position_type']
+    g_const = para_list['g_const']
+    SimpleCam = para_list['SimpleCam']
+
+    assert not save_image_noise, 'KiDS_varChips does not support for save noise_image for now!'
+
     logger.info(f'Simulating KiDS exposure with varChips for tile {tile_label} band {band} expo {id_exposure} rot {gal_rotation_angle}...')
 
     # PSF profiles
-    if psf_info_chips[0].lower() == 'moffat':
-
-        # function
-        psf_func = PSFModule.MoffatPSF
-        psf_pixel = False
-
-        # paras
-        seeing_chips, beta_chips, psf_e_chips = psf_info_chips[1:]
-        psf_paras_chips = []
-        for i_chip in range(32):
-            seeing = seeing_chips[i_chip]
-            beta = beta_chips[i_chip]
-            psf_e = [psf_e_chips[0][i_chip], psf_e_chips[1][i_chip]]
-            # if psf e is zero, replace with None
-            if (psf_e[0] == 0.) and (psf_e[1] == 0.):
-                psf_e = None
-
-            psf_paras_chips.append((seeing, beta, psf_e))
-            del seeing, beta, psf_e
-        del seeing_chips, beta_chips, psf_e_chips, psf_info_chips
-
-    elif psf_info_chips[0].lower() == 'airy':
-
-        # function
-        psf_func = PSFModule.AiryPSF
-        psf_pixel = False
-
-        # paras
-        lam_chips, diam_chips, obscuration_chips, psf_e_chips = psf_info_chips[1:]
-        psf_paras_chips = []
-        for i_chip in range(32):
-            lam = lam_chips[i_chip]
-            diam = diam_chips[i_chip]
-            obscuration = obscuration_chips[i_chip]
-            psf_e = [psf_e_chips[0][i_chip], psf_e_chips[1][i_chip]]
-            # if psf e is zero, replace with None
-            if (psf_e[0] == 0.) and (psf_e[1] == 0.):
-                psf_e = None
-
-            psf_paras_chips.append((lam, diam, obscuration, psf_e))
-            del lam, diam, obscuration, psf_e
-        del lam_chips, diam_chips, obscuration_chips, psf_e_chips, psf_info_chips
-
-    elif psf_info_chips[0].lower() == 'pixelima':
-
-        # function
-        psf_func = PSFModule.loadPixelPSF
-        psf_pixel = True
-
-        # paras
-        psf_fits_file_chips = psf_info_chips[1]
-        psf_paras_chips = []
-        for i_chip in range(32):
-            psf_paras_chips.append((psf_fits_file_chips[i_chip], pixel_scale, (0.5, 0.5)))
-        del psf_fits_file_chips, psf_info_chips
+    psf_func, psf_paras_chips, psf_pixel = PSFModule.parse_psf_info_chips(psf_info_chips, pixel_scale)
+    del psf_info_chips
 
     # outpath
     outpath_image_name_list = [os.path.join(outpath_dir, f'chips_tile{tile_label}_band{band}_rot{gal_rotation_angle:.0f}', f'exp{id_exposure}chip_{i_chip+1}OFCS.fits')
@@ -604,37 +553,50 @@ def _PSFNoisySkyImages_KiDS_varChips(para_list):
     if (save_image_PSF) and (gal_rotation_angle==0.):
         psf_dir_tmp = os.path.join(outpath_dir, f'psf_tile{tile_label}_band{band}')
         psf_ima_file_tmp = os.path.join(psf_dir_tmp, f'exp{id_exposure}chip.fits')
-        if os.path.isfile(psf_ima_file_tmp):
+        ## the centred counterpart, for metadetect and HSM (see ImSimPSF.PSFima)
+        psf_ima_centred_file_tmp = PSFModule.psf_centred_path(psf_ima_file_tmp)
+        if os.path.isfile(psf_ima_file_tmp) and os.path.isfile(psf_ima_centred_file_tmp):
             logger.info(f'PSF image already exist.')
         else:
-            # initial hdul
-            hdu_list = fits.HDUList(fits.PrimaryHDU())
-            ## add a card for pixel scale
-            hdu_list[0].header['GS_SCALE'] = (pixel_scale, 'GalSim image scale')
+            os.makedirs(psf_dir_tmp, exist_ok=True)
+            # initial hdul, one per flavour
+            ##   True: half-pixel-shifted, as lensfit expects
+            ##   False: on the stamp true centre, as ngmix/metadetect assume
+            hdu_lists = {}
+            for half_pixel_shift in (True, False):
+                hdu_lists[half_pixel_shift] = fits.HDUList(fits.PrimaryHDU())
+                ## add a card for pixel scale
+                hdu_lists[half_pixel_shift][0].header['GS_SCALE'] = (pixel_scale, 'GalSim image scale')
             # produce 32 psf images
             for i_chip in range(32):
                 psf_paras = psf_paras_chips[i_chip]
 
                 PSF = psf_func(*psf_paras)
-                psf_ima = PSFModule.PSFima(PSF, pixel_scale, size=image_PSF_size, 
-                                    pixelPSF=psf_pixel)
+                for half_pixel_shift, hdu_list in hdu_lists.items():
+                    psf_ima = PSFModule.PSFima(PSF, pixel_scale, size=image_PSF_size, 
+                                        pixelPSF=psf_pixel,
+                                        half_pixel_shift=half_pixel_shift)
 
-                # collect to hdul
-                galsim.fits.write(psf_ima, hdu_list=hdu_list)
-                ## save chip id
-                hdu_list[i_chip+1].header['IMAGEID'] = i_chip+1
+                    # collect to hdul
+                    galsim.fits.write(psf_ima, hdu_list=hdu_list)
+                    ## save chip id
+                    hdu_list[i_chip+1].header['IMAGEID'] = i_chip+1
 
-            # save psf image
-            hdu_list.writeto(psf_ima_file_tmp)
+            # save psf images
+            ##    overwrite: the shifted file may already exist from a run made
+            ##    before the centred flavour was introduced, in which case the
+            ##    check above sends us here to regenerate both
+            hdu_lists[True].writeto(psf_ima_file_tmp, overwrite=True)
+            hdu_lists[False].writeto(psf_ima_centred_file_tmp, overwrite=True)
 
     ## if all exist, quit
     if (not False in outpath_image_exist_list):
         logger.info("All desired images exist, end the process.")
         return 1
 
-    # +++ background noise 
-    ## same for all chips
-    noise = NoiseModule.GaussianNoise(rms, rng_seed=int(rng_seed_band+120*gal_rotation_angle+94*id_exposure))
+    # +++ background noise base seed
+    ## per-chip noise objects are created in the loop for reproducibility when resuming
+    noise_base_seed = int(rng_seed_band+120*gal_rotation_angle+94*id_exposure)
 
     # +++ sky image
     if (False in outpath_image_exist_list):
@@ -647,7 +609,7 @@ def _PSFNoisySkyImages_KiDS_varChips(para_list):
             DEC_gals = np.hstack([DEC_gals, gals_info_band[1]['DEC'].values])
         RA0 = (np.amax(RA_gals) + np.amin(RA_gals))/2.
         DEC0 = (np.amax(DEC_gals) + np.amin(DEC_gals))/2.
-        canvases_list = KiDSModule.getKiDScanvases(RA0, DEC0, id_exposure=id_exposure)
+        canvases_list = KiDSModule.getKiDScanvases(RA0, DEC0, SimpleCam, id_exposure=id_exposure)
         del RA_gals, DEC_gals, RA0, DEC0
 
         # all desired images
@@ -687,7 +649,9 @@ def _PSFNoisySkyImages_KiDS_varChips(para_list):
                     del image_stars
 
                 ## add noise background
-                image_galaxies.addNoise(noise)
+                ## use a per-chip seed for reproducibility when resuming
+                noise_chip = NoiseModule.GaussianNoise(rms, rng_seed=int(noise_base_seed + i_chip*7))
+                image_galaxies.addNoise(noise_chip)
 
                 ## save the noisy image
                 image_galaxies.write(outpath_image_name)

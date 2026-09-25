@@ -2,7 +2,7 @@
 # @Author: lshuns
 # @Date:   2021-07-22 13:34:12
 # @Last Modified by:   lshuns
-# @Last Modified time: 2023-02-09 16:03:13
+# @Last Modified time: 2026-01-07 17:05:58
 
 ### Everything about simple images
 __all__ = ['_PSFNoisySkyImages_simple']
@@ -16,11 +16,9 @@ import ImSimObject as ObjModule
 import ImSimNoiseBackground as NoiseModule
 
 import os
-import galsim
 import logging
 
 import numpy as np
-
 from astropy.io import fits
 
 logger = logging.getLogger(__name__)
@@ -32,49 +30,33 @@ def _PSFNoisySkyImages_simple(para_list):
         Adjoint to RunParallel_PSFNoisySkyImages in ImSim.py
     '''
 
-    (tile_label, band, pixel_scale, rng_seed_band, outpath_image_basename,
-        rms, psf_info,
-        g_cosmic,
-        gals_info_band, gal_rotation_angle,
-        stars_info_band,
-        outpath_PSF_basename, N_PSF, sep_PSF,
-        save_image_chips, save_image_PSF, image_PSF_size,
-        outpath_dir,
-        gal_position_type,
-        g_const) = para_list
+    tile_label = para_list['tile_label']
+    band = para_list['band']
+    pixel_scale = para_list['pixel_scale']
+    rng_seed_band = para_list['rng_seed_band']
+    outpath_image_basename = para_list['outpath_image_basename']
+    rms = para_list['rms']
+    psf_info = para_list['psf_info']
+    g_cosmic = para_list['g_cosmic']
+    gals_info_band = para_list['gals_info_band']
+    gal_rotation_angle = para_list['gal_rotation_angle']
+    stars_info_band = para_list['stars_info_band']
+    outpath_PSF_basename = para_list['outpath_PSF_basename']
+    N_PSF = para_list['N_PSF']
+    sep_PSF = para_list['sep_PSF']
+    save_image_chips = para_list['save_image_chips']
+    save_image_PSF = para_list['save_image_PSF']
+    image_PSF_size = para_list['image_PSF_size']
+    save_image_noise = para_list['save_image_noise']
+    outpath_dir = para_list['outpath_dir']
+    gal_position_type = para_list['gal_position_type']
+    g_const = para_list['g_const']
+    SimpleCam = para_list['SimpleCam']
 
     logger.info(f'Simulating simple image for tile {tile_label} band {band} rot {gal_rotation_angle}...')
 
     # PSF profiles
-    if psf_info[0].lower() == 'moffat':
-
-        seeing, beta, psf_e = psf_info[1:]
-        # if psf e is zero, replace with None
-        if (psf_e[0] == 0.) and (psf_e[1] == 0.):
-            psf_e = None
-
-        psf_paras = (seeing, beta, psf_e)
-        psf_func = PSFModule.MoffatPSF
-        psf_pixel = False
-
-    elif psf_info[0].lower() == 'airy':
-
-        lam, diam, obscuration, psf_e = psf_info[1:]
-        # if psf e is zero, replace with None
-        if (psf_e[0] == 0.) and (psf_e[1] == 0.):
-            psf_e = None
-
-        psf_paras = (lam, diam, obscuration, psf_e)
-        psf_func = PSFModule.AiryPSF
-        psf_pixel = False
-
-    elif psf_info[0].lower() == 'pixelima':
-
-        psf_fits_file = psf_info[1]
-
-        psf_paras = (psf_fits_file, pixel_scale, (0.5, 0.5))
-        psf_func = PSFModule.loadPixelPSF
-        psf_pixel = True
+    psf_func, psf_paras, psf_pixel = PSFModule.parse_psf_info(psf_info, pixel_scale)
 
     # warning
     if save_image_chips:
@@ -123,14 +105,23 @@ def _PSFNoisySkyImages_simple(para_list):
     if (save_image_PSF) and (gal_rotation_angle==0.):
         psf_dir_tmp = os.path.join(outpath_dir, f'psf_tile{tile_label}_band{band}')
         psf_ima_file_tmp = os.path.join(psf_dir_tmp, f'psf_ima.fits')
-        if os.path.isfile(psf_ima_file_tmp):
+        ## the centred counterpart, for metadetect and HSM (see ImSimPSF.PSFima)
+        psf_ima_centred_file_tmp = PSFModule.psf_centred_path(psf_ima_file_tmp)
+        if os.path.isfile(psf_ima_file_tmp) and os.path.isfile(psf_ima_centred_file_tmp):
             logger.info('PSF images already exist.')
         else:
+            os.makedirs(psf_dir_tmp, exist_ok=True)
             PSF = psf_func(*psf_paras)
+            ## half-pixel-shifted, as lensfit expects
             psf_ima = PSFModule.PSFima(PSF, pixel_scale, size=image_PSF_size,
-                            pixelPSF=psf_pixel)
+                            pixelPSF=psf_pixel, half_pixel_shift=True)
             psf_ima.write(psf_ima_file_tmp)
-            logger.info(f'PSF image saved as {psf_ima_file_tmp}')
+            ## on the stamp true centre, as ngmix/metadetect assume
+            psf_ima = PSFModule.PSFima(PSF, pixel_scale, size=image_PSF_size,
+                            pixelPSF=psf_pixel, half_pixel_shift=False)
+            psf_ima.write(psf_ima_centred_file_tmp)
+            logger.info(f'PSF images saved as {psf_ima_file_tmp} '
+                        f'and {psf_ima_centred_file_tmp}')
 
     ## if all exist, quit
     if (outpath_image_exist) and (outpath_PSF_exist):
@@ -142,17 +133,19 @@ def _PSFNoisySkyImages_simple(para_list):
 
     # +++ background noise
     noise = NoiseModule.GaussianNoise(rms, rng_seed=int(rng_seed_band+120*gal_rotation_angle))
+    noise_psf = NoiseModule.GaussianNoise(rms, rng_seed=int(rng_seed_band+120*gal_rotation_angle+77))
+    noise_2 = NoiseModule.GaussianNoise(rms, rng_seed=int(rng_seed_band+99))
 
     # +++ PSF map
     if (not outpath_PSF_exist):
         mag_PSF_2 = 18. # for noise_flux = 2
         mag_PSF = mag_PSF_2 - 2.5*np.log10(rms/2.)
-        image_PSF = PSFModule.PSFmap(PSF, pixel_scale, mag_PSF, 
+        image_PSF = PSFModule.PSFmap(PSF, pixel_scale, mag_PSF,
                         N_PSF=N_PSF, sep_PSF=sep_PSF, rng_seed=rng_seed_band,
                         pixelPSF=psf_pixel)
 
         ## noise background
-        image_PSF_rot.addNoise(noise)
+        image_PSF.addNoise(noise_psf)
 
         ## save
         image_PSF.write(outpath_PSF_name)
@@ -180,6 +173,21 @@ def _PSFNoisySkyImages_simple(para_list):
         canvas = ObjModule.SimpleCanvas(RA_min, RA_max, DEC_min, DEC_max, pixel_scale)
         del RA_gals, DEC_gals
 
+        # save noise image if required
+        ## different rotation has same noise, so only make once
+        if (save_image_noise) and (gal_rotation_angle==0.):
+            noise_dir_tmp = os.path.join(outpath_dir, 
+                                         f'noise_tile{tile_label}_band{band}')
+            noise_ima_file_tmp = os.path.join(noise_dir_tmp, 
+                                              f'noise_image.fits')
+            ## add noise background
+            noise_image = canvas.copy()
+            noise_image.addNoise(noise_2)
+            ## save the noisy image
+            noise_image.write(noise_ima_file_tmp)
+            logger.info(f"Noise image saved as {noise_ima_file_tmp}")
+            del noise_image
+
         # star image
         if (stars_info_band is not None):
             image_stars = ObjModule.StarsImage(canvas, band, pixel_scale, PSF, stars_info_band,
@@ -199,7 +207,6 @@ def _PSFNoisySkyImages_simple(para_list):
                                 g_cosmic=g_cosmic, gal_position_type=gal_position_type,
                                 g_const=g_const, 
                                 pixelPSF=psf_pixel)
-
 
         ## add stars
         if (image_stars is not None):

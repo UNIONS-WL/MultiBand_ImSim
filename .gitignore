@@ -7,12 +7,14 @@ __pycache__/
 
 test_*
 hack_*
+output-*
 *_hack.py
 *_backup.py
 nohup*
 old_*
 *_old*
 tmp_*
+log-*
 
 log/
 old/

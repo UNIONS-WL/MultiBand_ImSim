@@ -2,7 +2,7 @@
 # @Author: lshuns
 # @Date:   2021-01-07 16:24:17
 # @Last modified by:   lshuns
-# @Last modified time: 2021-06-10, 18:17:08
+# @Last modified time: 2025-10-28 12:10:41
 
 ### Everything about input catalogue
 
@@ -79,12 +79,12 @@ def GalInfo(cata_pathfile, primary_band, bands,
         logger.info(f"size cut in: {size_cut}")
 
     # load file
-    file_type = cata_pathfile[-3:]
-    if file_type == 'csv':
+    file_type = os.path.splitext(cata_pathfile)[1].lower()
+    if file_type == '.csv':
         cata = pd.read_csv(cata_pathfile)
-    elif file_type == 'her':
+    elif file_type == '.feather':
         cata = pd.read_feather(cata_pathfile)
-    elif file_type == 'its':
+    elif file_type == '.fits':
         with fits.open(cata_pathfile) as hdul:
             cata = hdul[1].data
     else:
@@ -168,19 +168,35 @@ def GalInfo(cata_pathfile, primary_band, bands,
         z_gals = np.full(Ngal, -999)
 
     # collect all information to dataframe
-    data = [np.array(index).astype(int), np.array(X_gals).astype(float), np.array(Y_gals).astype(float), np.array(z_gals).astype(float),
-                np.array(sersic_n).astype(float), np.array(Re).astype(float), np.array(axis_ratios).astype(float), np.array(position_angles).astype(float),
-                np.array(bulge_fractions).astype(float), np.array(bulge_Re).astype(float), np.array(bulge_axis_ratios).astype(float), np.array(bulge_n).astype(float),
-                np.array(disk_Re).astype(float), np.array(disk_axis_ratios).astype(float)] + mag_list
-    data = np.transpose(data)
-    name = ['index','RA','DEC','redshift',
-                'sersic_n','Re','axis_ratio','position_angle',
-                'bulge_fraction','bulge_Re','bulge_axis_ratio','bulge_n',
-                'disk_Re','disk_axis_ratio'] + bands
+    gals_info = pd.DataFrame({
+        'index': np.array(index).astype(int),
+        'RA': np.array(X_gals).astype(float),
+        'DEC': np.array(Y_gals).astype(float),
+        'redshift': np.array(z_gals).astype(float),
+        'sersic_n': np.array(sersic_n).astype(float),
+        'Re': np.array(Re).astype(float),
+        'axis_ratio': np.array(axis_ratios).astype(float),
+        'position_angle': np.array(position_angles).astype(float),
+        'bulge_fraction': np.array(bulge_fractions).astype(float),
+        'bulge_Re': np.array(bulge_Re).astype(float),
+        'bulge_axis_ratio': np.array(bulge_axis_ratios).astype(float),
+        'bulge_n': np.array(bulge_n).astype(float),
+        'disk_Re': np.array(disk_Re).astype(float),
+        'disk_axis_ratio': np.array(disk_axis_ratios).astype(float)
+    })
+    del index, X_gals, Y_gals, z_gals, 
+    del sersic_n, Re, axis_ratios, position_angles, 
+    del bulge_fractions, bulge_Re, bulge_axis_ratios, bulge_n, 
+    del disk_Re, disk_axis_ratios
+    ## magnitudes
+    band_names = list(bands)
     if primary_band not in bands:
-        name += [primary_band]
-    gals_info = pd.DataFrame(data=data, columns=name)
-    gals_info = gals_info.astype({'index': int})
+        band_names += [primary_band]
+    gals_mag = pd.DataFrame(data=np.column_stack(mag_list), 
+                            columns=band_names)
+    del mag_list
+    gals_info = pd.concat([gals_info, gals_mag], axis=1)
+    del gals_mag
 
     # input shear if provided
     if g_columns is not None:
@@ -248,7 +264,7 @@ def GalInfo_adjust4casual(gals_info,
 
     # bin the causual sample with Nqbins provided
     gals_info_casual.loc[:, 'i_qbin'] = pd.qcut(gals_info_casual[qbin_band], Nqbins, labels=False)
-    info_grouped = gals_info_casual.groupby(by=['i_qbin'])
+    info_grouped = gals_info_casual.groupby(by='i_qbin')
     del gals_info_casual
     
     # loop over the bins and draw galaxies
@@ -322,12 +338,12 @@ def StarInfo(cata_pathfile, primary_band, bands,
         logger.info(f"Magnitude cut in: {mag_cut}")
 
     # load file
-    file_type = cata_pathfile[-3:]
-    if file_type == 'csv':
+    file_type = os.path.splitext(cata_pathfile)[1].lower()
+    if file_type == '.csv':
         cata = pd.read_csv(cata_pathfile)
-    elif file_type == 'her':
+    elif file_type == '.feather':
         cata = pd.read_feather(cata_pathfile)
-    elif file_type == 'its':
+    elif file_type == '.fits':
         with fits.open(cata_pathfile) as hdul:
             cata = hdul[1].data
     else:
@@ -345,6 +361,10 @@ def StarInfo(cata_pathfile, primary_band, bands,
 
     # unique id
     index = cata[id_name]
+    ## add 999 to star IDs to distinguish them from galaxies
+    max_scaling = 10 ** (np.floor(np.log10(np.max(index))) + 1).astype(int)
+    index = 999 * max_scaling + index
+    del max_scaling
     Nstar = len(index)
     logger.debug(f'Number of stars {Nstar}')
 
@@ -358,7 +378,7 @@ def StarInfo(cata_pathfile, primary_band, bands,
     if RaDec_names is not None:
         ## use true position
         X_stars = cata[RaDec_names[0]] # degree
-        Y_stars = cata[RaDec_names[0]] # degree
+        Y_stars = cata[RaDec_names[1]] # degree
     else:
         ## will be set late
         X_stars = np.zeros(Nstar)
@@ -441,12 +461,12 @@ def NoiseInfo(cata_pathfile, bands,
         psf_type_list *= len(bands)
 
     # load file
-    file_type = cata_pathfile[-3:]
-    if file_type == 'csv':
+    file_type = os.path.splitext(cata_pathfile)[1].lower()
+    if file_type == '.csv':
         cata = pd.read_csv(cata_pathfile)
-    elif file_type == 'her':
+    elif file_type == '.feather':
         cata = pd.read_feather(cata_pathfile)
-    elif file_type == 'its':
+    elif file_type == '.fits':
         with fits.open(cata_pathfile) as hdul:
             cata = Table(hdul[1].data).to_pandas()
     else:
@@ -454,12 +474,12 @@ def NoiseInfo(cata_pathfile, bands,
     logger.info(f'noise cata: {cata_pathfile}')
     ## for varChips
     if file4varChips:
-        file_type = file4varChips[-3:]
-        if file_type == 'csv':
+        file_type = os.path.splitext(file4varChips)[1].lower()
+        if file_type == '.csv':
             cata_varChips = pd.read_csv(file4varChips)
-        elif file_type == 'her':
+        elif file_type == '.feather':
             cata_varChips = pd.read_feather(file4varChips)
-        elif file_type == 'its':
+        elif file_type == '.fits':
             with fits.open(file4varChips) as hdul:
                 cata_varChips = Table(hdul[1].data).to_pandas()
         else:

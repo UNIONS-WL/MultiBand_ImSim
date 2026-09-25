@@ -2,17 +2,170 @@
 # @Author: lshuns
 # @Date:   2020-11-26 15:00:22
 # @Last Modified by:   lshuns
-# @Last Modified time: 2021-11-24 13:47:16
+# @Last Modified time: 2026-08-31 16:14:16
 
 ### Everything about PSF
 __all__ = ['MoffatPSF', 'AiryPSF', 'loadPixelPSF', \
-            'PSFima', 'PSFmap', 'PSFmap_MultiPSF', 'PSFmap_DiffMag', 'PSFmap_MultiPSF_DiffMag']
+            'PSFima', 'PSFmap', 'PSFmap_MultiPSF', 'PSFmap_DiffMag', 'PSFmap_MultiPSF_DiffMag',
+            'parse_psf_info', 'parse_psf_info_chips',
+            'PSF_CENTRED_SUFFIX', 'psf_centred_path']
 
+import os
 import galsim
 import logging
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+## Two flavours of every PSF stamp are saved, because the codes downstream do not
+##    agree on where the PSF should sit within its stamp:
+##
+##      <name>.fits            the profile is shifted by half a pixel before being
+##                             drawn, which puts it on a pixel centre for an
+##                             even-sized stamp. This is what lensfit expects and
+##                             what PSFima has always produced.
+##      <name>_centred.fits    the profile sits on the true centre of the stamp,
+##                             i.e. the zero-based position ((n-1)/2, (n-1)/2).
+##                             This is where GalSim's InterpolatedImage places a
+##                             stamp, and therefore where ngmix/metadetect assume
+##                             the PSF to be. Handing the shifted stamp to
+##                             metadetect displaces every measured position by
+##                             half a pixel per axis (0.71 pixel in total).
+PSF_CENTRED_SUFFIX = '_centred'
+
+def psf_centred_path(path):
+    """
+    Name of the centred counterpart of a PSF stamp file (see PSFima).
+    """
+    root, ext = os.path.splitext(path)
+    return root + PSF_CENTRED_SUFFIX + ext
+
+def _grid_positions(N, sep, rng_seed):
+    """
+    Generate grid positions for N objects with given separation,
+    plus a random jitter.
+
+    Returns
+    -------
+    x, y : ndarray
+        Pixel coordinates.
+    """
+    separation = int(sep)
+    Nrow = int(N**0.5)
+    x = np.arange(separation, separation+Nrow*separation, separation, dtype='int')
+    y = np.repeat(x, Nrow)
+    x = np.tile(x, Nrow)
+    ## check outliers
+    Nrow = N - len(x)
+    if Nrow > 0:
+        x = np.concatenate([x, np.arange(separation, separation+Nrow*separation, separation)])
+        y = np.concatenate([y, np.full(Nrow, y[-1]+separation)])
+    elif Nrow < 0:
+        x = x[:N]
+        y = y[:N]
+    ## make random shift
+    rng = np.random.RandomState(rng_seed)
+    shift_lim = int(separation/5.)
+    dx = rng.randint(low=-shift_lim, high=shift_lim, size=N)
+    dy = rng.randint(low=-shift_lim, high=shift_lim, size=N)
+    x += dx
+    y += dy
+    return x, y
+
+def parse_psf_info(psf_info, pixel_scale):
+    """
+    Parse PSF info tuple into a callable function and its parameters.
+
+    Parameters
+    ----------
+    psf_info : tuple
+        PSF specification: (type_name, *params).
+        Supported types: 'moffat', 'airy', 'pixelima'.
+    pixel_scale : float
+        Pixel scale in arcsec (used for pixelima).
+
+    Returns
+    -------
+    psf_func : callable
+        Function to create the PSF model.
+    psf_paras : tuple
+        Arguments for psf_func.
+    psf_pixel : bool
+        Whether the PSF already includes pixel response.
+    """
+    psf_type = psf_info[0].lower()
+
+    if psf_type == 'moffat':
+        seeing, beta, psf_e = psf_info[1:]
+        if (psf_e[0] == 0.) and (psf_e[1] == 0.):
+            psf_e = None
+        return MoffatPSF, (seeing, beta, psf_e), False
+
+    elif psf_type == 'airy':
+        lam, diam, obscuration, psf_e = psf_info[1:]
+        if (psf_e[0] == 0.) and (psf_e[1] == 0.):
+            psf_e = None
+        return AiryPSF, (lam, diam, obscuration, psf_e), False
+
+    elif psf_type == 'pixelima':
+        psf_fits_file = psf_info[1]
+        return loadPixelPSF, (psf_fits_file, pixel_scale, (0.5, 0.5)), True
+
+    else:
+        raise ValueError(f'Unsupported PSF type: {psf_info[0]}')
+
+def parse_psf_info_chips(psf_info_chips, pixel_scale, n_chips=32):
+    """
+    Parse per-chip PSF info into a callable function and per-chip parameters.
+
+    Parameters
+    ----------
+    psf_info_chips : tuple
+        PSF specification with per-chip arrays: (type_name, *chip_arrays).
+    pixel_scale : float
+        Pixel scale in arcsec.
+    n_chips : int
+        Number of chips.
+
+    Returns
+    -------
+    psf_func : callable
+        Function to create the PSF model.
+    psf_paras_chips : list of tuple
+        Per-chip arguments for psf_func.
+    psf_pixel : bool
+        Whether the PSF already includes pixel response.
+    """
+    psf_type = psf_info_chips[0].lower()
+
+    if psf_type == 'moffat':
+        seeing_chips, beta_chips, psf_e_chips = psf_info_chips[1:]
+        psf_paras_chips = []
+        for i_chip in range(n_chips):
+            psf_e = [psf_e_chips[0][i_chip], psf_e_chips[1][i_chip]]
+            if (psf_e[0] == 0.) and (psf_e[1] == 0.):
+                psf_e = None
+            psf_paras_chips.append((seeing_chips[i_chip], beta_chips[i_chip], psf_e))
+        return MoffatPSF, psf_paras_chips, False
+
+    elif psf_type == 'airy':
+        lam_chips, diam_chips, obscuration_chips, psf_e_chips = psf_info_chips[1:]
+        psf_paras_chips = []
+        for i_chip in range(n_chips):
+            psf_e = [psf_e_chips[0][i_chip], psf_e_chips[1][i_chip]]
+            if (psf_e[0] == 0.) and (psf_e[1] == 0.):
+                psf_e = None
+            psf_paras_chips.append((lam_chips[i_chip], diam_chips[i_chip], obscuration_chips[i_chip], psf_e))
+        return AiryPSF, psf_paras_chips, False
+
+    elif psf_type == 'pixelima':
+        psf_fits_file_chips = psf_info_chips[1]
+        psf_paras_chips = [(psf_fits_file_chips[i_chip], pixel_scale, (0.5, 0.5))
+                           for i_chip in range(n_chips)]
+        return loadPixelPSF, psf_paras_chips, True
+
+    else:
+        raise ValueError(f'Unsupported PSF type: {psf_info_chips[0]}')
 
 def MoffatPSF(seeing, moffat_beta, psf_e=None):
     """
@@ -38,9 +191,11 @@ def MoffatPSF(seeing, moffat_beta, psf_e=None):
         psf_e1 = psf_e[0]
         psf_e2 = psf_e[1]
 
-        psf_e = np.sqrt(psf_e1**2+psf_e2**2)
+        psf_e_mag = np.sqrt(psf_e1**2+psf_e2**2)
+        if psf_e_mag >= 2:
+            raise ValueError(f'Unphysical PSF ellipticity |e| = {psf_e_mag} >= 2')
         # g_i = e_i/(2-e)
-        psf_g1, psf_g2 = psf_e1/(2-psf_e), psf_e2/(2-psf_e)
+        psf_g1, psf_g2 = psf_e1/(2-psf_e_mag), psf_e2/(2-psf_e_mag)
 
         psf = psf.shear(g1=psf_g1, g2=psf_g2)
 
@@ -72,9 +227,11 @@ def AiryPSF(lam, diam, obscuration, psf_e=None):
         psf_e1 = psf_e[0]
         psf_e2 = psf_e[1]
 
-        psf_e = np.sqrt(psf_e1**2+psf_e2**2)
+        psf_e_mag = np.sqrt(psf_e1**2+psf_e2**2)
+        if psf_e_mag >= 2:
+            raise ValueError(f'Unphysical PSF ellipticity |e| = {psf_e_mag} >= 2')
         # g_i = e_i/(2-e)
-        psf_g1, psf_g2 = psf_e1/(2-psf_e), psf_e2/(2-psf_e)
+        psf_g1, psf_g2 = psf_e1/(2-psf_e_mag), psf_e2/(2-psf_e_mag)
 
         psf = psf.shear(g1=psf_g1, g2=psf_g2)
 
@@ -103,7 +260,7 @@ def loadPixelPSF(inpath, pixel_scale, offset=(0.5, 0.5)):
 
     return PixelPSF
 
-def PSFima(PSF, pixel_scale, size=32, pixelPSF=False):
+def PSFima(PSF, pixel_scale, size=32, pixelPSF=False, half_pixel_shift=True):
     """
     Draw a single PSF image from a PSF model.
 
@@ -117,6 +274,13 @@ def PSFima(PSF, pixel_scale, size=32, pixelPSF=False):
         The image size in unit of pixel
     pixelPSF : bool, optional (default: False)
         if the PSF provided already including pixel response
+    half_pixel_shift : bool, optional (default: True)
+        shift the profile by half a pixel before drawing it, which puts the PSF
+        on a pixel centre for an even-sized stamp. This is the convention
+        lensfit expects. Set it to False to leave the profile on the true centre
+        of the stamp, ((n-1)/2, (n-1)/2) zero-based, which is what GalSim's
+        InterpolatedImage and hence ngmix/metadetect assume.
+        See PSF_CENTRED_SUFFIX for how the two flavours are named on disk.
 
     Returns
     -------
@@ -125,13 +289,16 @@ def PSFima(PSF, pixel_scale, size=32, pixelPSF=False):
     """
 
     psf_image = galsim.Image(size, size)
-    PSF_lf = PSF.shift(0.5*pixel_scale, 0.5*pixel_scale)
+    if half_pixel_shift:
+        PSF_tmp = PSF.shift(0.5*pixel_scale, 0.5*pixel_scale)
+    else:
+        PSF_tmp = PSF
 
     if pixelPSF:
         draw_method = 'no_pixel'
     else:
         draw_method = 'auto'
-    psf_image = PSF_lf.drawImage(image=psf_image, scale=pixel_scale, method=draw_method)
+    psf_image = PSF_tmp.drawImage(image=psf_image, scale=pixel_scale, method=draw_method)
 
     return psf_image
 
@@ -169,34 +336,14 @@ def PSFmap(PSF, pixel_scale, mag_input, mag_zero=30., N_PSF=100, sep_PSF=120, rn
     flux = 10**(-0.4*(mag_input-mag_zero))
 
     # position
-    # separation in pixels
+    x, y = _grid_positions(N_PSF, sep_PSF, rng_seed)
     separation = int(sep_PSF)
-    ## number in each row
-    Nrow = int(N_PSF**0.5)
-    ## get grid center
-    x = np.arange(separation, separation+Nrow*separation, separation, dtype='int')
-    y = np.repeat(x, Nrow)
-    x = np.tile(x, Nrow)
-    ## check outliers
-    Nrow = N_PSF - len(x)
-    if Nrow > 0:
-        x = np.concatenate([x, np.arange(separation, separation+Nrow*separation, separation)])
-        y = np.concatenate([y, np.full(Nrow, y[-1]+separation)])
-    elif Nrow < 0:
-        x = x[:N_PSF]
-        y = y[:N_PSF]
-    ## make random shift
-    np.random.seed(rng_seed)
-    shift_lim = int(separation/5.)
-    dx_dy = np.random.randint(low=-shift_lim, high=shift_lim, size=N_PSF)
-    x += dx_dy
-    y += dx_dy    
 
     # initiate a canvas
     psf_image = galsim.ImageF(int(np.amax(x)+separation), int(np.max(y)+separation), scale=pixel_scale)
     logger.debug(f"PSF image bounds {psf_image.bounds}")
 
-    # draw PSF 
+    # draw PSF
     star_like_PSF = PSF.withFlux(flux)
     ## draw stamp
     if pixelPSF:
@@ -252,28 +399,8 @@ def PSFmap_MultiPSF(PSF_list, pixel_scale, mag_input, mag_zero=30., sep_PSF=120,
     N_PSF = len(PSF_list)
 
     # position
-    # separation in pixels
+    x, y = _grid_positions(N_PSF, sep_PSF, rng_seed)
     separation = int(sep_PSF)
-    ## number in each row
-    Nrow = int(N_PSF**0.5)
-    ## get grid center
-    x = np.arange(separation, separation+Nrow*separation, separation, dtype='int')
-    y = np.repeat(x, Nrow)
-    x = np.tile(x, Nrow)
-    ## check outliers
-    Nrow = N_PSF - len(x)
-    if Nrow > 0:
-        x = np.concatenate([x, np.arange(separation, separation+Nrow*separation, separation)])
-        y = np.concatenate([y, np.full(Nrow, y[-1]+separation)])
-    elif Nrow < 0:
-        x = x[:N_PSF]
-        y = y[:N_PSF]
-    ## make random shift
-    np.random.seed(rng_seed)
-    shift_lim = int(separation/5.)
-    dx_dy = np.random.randint(low=-shift_lim, high=shift_lim, size=N_PSF)
-    x += dx_dy
-    y += dx_dy    
 
     # initiate a canvas
     psf_image = galsim.ImageF(int(np.amax(x)+separation), int(np.max(y)+separation), scale=pixel_scale)
@@ -304,8 +431,8 @@ def PSFmap_MultiPSF(PSF_list, pixel_scale, mag_input, mag_zero=30., sep_PSF=120,
 
     return psf_image
 
-def PSFmap_DiffMag(PSF, pixel_scale, mag_inputs, mag_zero=30., sep_type='random', rng_seed=940120, area=1., pixelPSF=False):
-    """ 
+def PSFmap_DiffMag(PSF, pixel_scale, mag_inputs, mag_zero=30., sep_type='random', rng_seed=940120, area=1., sep_PSF=120, pixelPSF=False):
+    """
     Generate PSF stars from a single PSF model,
         with variable magnitudes.
 
@@ -320,11 +447,13 @@ def PSFmap_DiffMag(PSF, pixel_scale, mag_inputs, mag_zero=30., sep_type='random'
     mag_zero : float, optional (default: 30.)
         The zero point for magnitude.
     sep_type : str, optional (default: 'random')
-        Seperation type between PSFs.        
-    rng_seed : int, optional (default: 940120) 
+        Seperation type between PSFs.
+    rng_seed : int, optional (default: 940120)
         Seed for random number generator.
     area (deg^2) : float, optional (default: 1)
         Total area for simulated image (used when sep_type='random')
+    sep_PSF (pixel) : int, optional (default: 120)
+        Seperation between PSFs (used when sep_type='grid').
     pixelPSF : bool, optional (default: False)
         if the PSF provided already including pixel response
 
@@ -335,7 +464,7 @@ def PSFmap_DiffMag(PSF, pixel_scale, mag_inputs, mag_zero=30., sep_type='random'
     """
 
     mag_inputs = np.array(mag_inputs)
-    
+
     # number of stars
     N_PSF = len(mag_inputs)
 
@@ -346,15 +475,23 @@ def PSFmap_DiffMag(PSF, pixel_scale, mag_inputs, mag_zero=30., sep_type='random'
     if sep_type == 'random':
         # 1degree range
         high_pixel = int(area**0.5*3600./pixel_scale)
-        ## for x 
-        np.random.seed(rng_seed)
-        x = np.random.randint(low=0, high=high_pixel, size=N_PSF)
+        ## for x
+        rng_x = np.random.RandomState(rng_seed)
+        x = rng_x.randint(low=0, high=high_pixel, size=N_PSF)
         ## for y
-        np.random.seed(rng_seed+94)
-        y = np.random.randint(low=0, high=high_pixel, size=N_PSF)
+        rng_y = np.random.RandomState(rng_seed+94)
+        y = rng_y.randint(low=0, high=high_pixel, size=N_PSF)
+        # canvas size
+        canvas_size = int(high_pixel+10)
+    else:
+        # grid layout
+        x, y = _grid_positions(N_PSF, sep_PSF, rng_seed)
+        separation = int(sep_PSF)
+        # canvas size
+        canvas_size = int(max(np.amax(x), np.amax(y)) + separation)
 
     # initiate a canvas
-    psf_image = galsim.ImageF(int(high_pixel+10), int(high_pixel+10), scale=pixel_scale)
+    psf_image = galsim.ImageF(canvas_size, canvas_size, scale=pixel_scale)
 
     # place PSF
     for i in range(N_PSF):
@@ -413,28 +550,8 @@ def PSFmap_MultiPSF_DiffMag(PSF_list, pixel_scale, mag_list, mag_zero=30., sep_P
     N_PSF = len(PSF_list)
 
     # position
-    # separation in pixels
+    x, y = _grid_positions(N_PSF, sep_PSF, rng_seed)
     separation = int(sep_PSF)
-    ## number in each row
-    Nrow = int(N_PSF**0.5)
-    ## get grid center
-    x = np.arange(separation, separation+Nrow*separation, separation, dtype='int')
-    y = np.repeat(x, Nrow)
-    x = np.tile(x, Nrow)
-    ## check outliers
-    Nrow = N_PSF - len(x)
-    if Nrow > 0:
-        x = np.concatenate([x, np.arange(separation, separation+Nrow*separation, separation)])
-        y = np.concatenate([y, np.full(Nrow, y[-1]+separation)])
-    elif Nrow < 0:
-        x = x[:N_PSF]
-        y = y[:N_PSF]
-    ## make random shift
-    np.random.seed(rng_seed)
-    shift_lim = int(separation/5.)
-    dx_dy = np.random.randint(low=-shift_lim, high=shift_lim, size=N_PSF)
-    x += dx_dy
-    y += dx_dy    
 
     # initiate a canvas
     psf_image = galsim.ImageF(int(np.amax(x)+separation), int(np.max(y)+separation), scale=pixel_scale)
