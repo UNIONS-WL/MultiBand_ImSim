@@ -7,6 +7,7 @@
 ### Everything about celestial objects
 
 import math
+import re
 
 import galsim
 import logging
@@ -30,6 +31,16 @@ SERSIC_N_MIN, SERSIC_N_MAX = 0.3, 6.2
 ## truncate the profile
 ### (for faster calculation)
 TRUNC_FACTOR = 5
+
+def parse_true_allsky_center(tile_label):
+    """Parse tile labels like 218.000-054.000 as RA/DEC centres."""
+    label = str(tile_label).strip()
+    match = re.match(r'^(\d+(?:\.\d+)?)\s*[-_, ]\s*([+-]?\d+(?:\.\d+)?)$', label)
+    if not match:
+        raise ValueError(
+            f'true_allsky requires noise labels formatted as RA-DEC, got {tile_label!r}'
+        )
+    return float(match.group(1)), float(match.group(2))
 
 def _build_galaxy_model(gal_info, band, gal_rotation_angle, g_cosmic, g_const, PSF):
     """
