@@ -33,6 +33,25 @@ from astropy.wcs import WCS
 
 logger = logging.getLogger(__name__)
 
+def _parse_true_allsky_center(tile_label):
+    """Parse tile labels like 218.000-054.000 as RA/DEC centres."""
+    label = str(tile_label).strip()
+    match = re.match(r'^(\d+(?:\.\d+)?)\s*[-_, ]\s*([+-]?\d+(?:\.\d+)?)$', label)
+    if not match:
+        raise ValueError(
+            f'true_allsky requires noise labels formatted as RA-DEC, got {tile_label!r}'
+        )
+    return float(match.group(1)), float(match.group(2))
+
+def _ra_interval_mask(ra_values, ra_min, ra_max):
+    """Select RA in [ra_min, ra_max), allowing true_allsky cuts to wrap at 0 deg."""
+    ra_values = np.mod(ra_values, 360.)
+    ra_min = ra_min % 360.
+    ra_max = ra_max % 360.
+    if ra_min < ra_max:
+        return (ra_values >= ra_min) & (ra_values < ra_max)
+    return (ra_values >= ra_min) | (ra_values < ra_max)
+
 def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, mag_zero,
                                             Nmax_proc,
                                             N_tiles, bands, pixel_scale_list, image_type_list,
@@ -132,7 +151,7 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
 
     # the camera layout
     if SimpleCam:
-        if np.max(np.abs(gals_info[0]['DEC'].values)) > 10:
+        if (np.max(np.abs(gals_info[0]['DEC'].values)) > 10) and (gal_position_type[0] != 'true_allsky'):
             raise Exception('set SimpleCam to False for large dec to avoid wrong CCD layout')
         logger.info('Using simple CCD layout in diffExpo and varChips images')
     else:
@@ -155,11 +174,16 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
         area_dec = area_ra
     elif survey.lower() == 'kids':
         if SimpleCut:
-            if np.max(np.abs(gals_info[0]['DEC'].values)) > 10:
+            if (np.max(np.abs(gals_info[0]['DEC'].values)) > 10) and (gal_position_type[0] != 'true_allsky'):
                 raise Exception('Set CalSimpleArea and SimpleCut to False for large DEC to avoid losing objects')
-            logger.info('Using a fixed 1x1 deg2 area for the input cutout')
-            area_ra = 1.0  # degrees
-            area_dec = 1.0  # degrees
+            if gal_position_type[0] == 'true_allsky':
+                logger.info('Using a fixed 2x2 deg2 area around the noise-label centre')
+                area_ra = 2.0  # degrees
+                area_dec = 2.0  # degrees
+            else:
+                logger.info('Using a fixed 1x1 deg2 area for the input cutout')
+                area_ra = 1.0  # degrees
+                area_dec = 1.0  # degrees
         else:
             if CalSimpleArea:
                 raise Exception('Set CalSimpleArea to False for non-SimpleCut')
@@ -223,26 +247,39 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
             logger.info(f'noise info saved to {outpath_tmp}')
 
             # sky area for a tile
-            ra_min = ra_min0 + area_ra * i_ra
-            ra_max = ra_min + area_ra
-            dec_sin_min = DECsin_min + area_dec * i_dec
-            dec_sin_max = dec_sin_min + area_dec
-            if CalSimpleArea:
-                dec_min = dec_sin_min
-                dec_max = dec_sin_max
+            if gal_position_type[0] == 'true_allsky':
+                ra_cen, dec_cen = _parse_true_allsky_center(tile_label)
+                ra_min = ra_cen - area_ra / 2.
+                ra_max = ra_cen + area_ra / 2.
+                dec_min = dec_cen - area_dec / 2.
+                dec_max = dec_cen + area_dec / 2.
+                dec_sin_min = dec_min
+                dec_sin_max = dec_max
+                logger.info(
+                    f'Using true_allsky cutout for tile {tile_label}: '
+                    f'RA=[{ra_min}, {ra_max}), DEC=[{dec_min}, {dec_max})'
+                )
             else:
-                dec_min = np.arcsin(dec_sin_min * np.pi / 180.) * 180. / np.pi
-                dec_max = np.arcsin(dec_sin_max * np.pi / 180.) * 180. / np.pi
+                ra_min = ra_min0 + area_ra * i_ra
+                ra_max = ra_min + area_ra
+                dec_sin_min = DECsin_min + area_dec * i_dec
+                dec_sin_max = dec_sin_min + area_dec
+                if CalSimpleArea:
+                    dec_min = dec_sin_min
+                    dec_max = dec_sin_max
+                else:
+                    dec_min = np.arcsin(dec_sin_min * np.pi / 180.) * 180. / np.pi
+                    dec_max = np.arcsin(dec_sin_max * np.pi / 180.) * 180. / np.pi
 
             # select galaxies
             ## careful one
-            mask_ra = (gals_info[0]['RA'] >= ra_min) & (gals_info[0]['RA'] < ra_max)
+            mask_ra = _ra_interval_mask(gals_info[0]['RA'].values, ra_min, ra_max)
             mask_dec = (gals_info[0]['DEC'] >= dec_min) & (gals_info[0]['DEC'] < dec_max)
             gals_info_careful_selec = gals_info[0][mask_ra & mask_dec].copy()
             gals_info_careful_selec.reset_index(drop=True, inplace=True)
             ## casual one
             if gals_info[1] is not None:
-                mask_ra = (gals_info[1]['RA'] >= ra_min) & (gals_info[1]['RA'] < ra_max)
+                mask_ra = _ra_interval_mask(gals_info[1]['RA'].values, ra_min, ra_max)
                 mask_dec = (gals_info[1]['DEC'] >= dec_min) & (gals_info[1]['DEC'] < dec_max)
                 gals_info_casual_selec = gals_info[1][mask_ra & mask_dec].copy()
                 gals_info_casual_selec.reset_index(drop=True, inplace=True)
@@ -305,7 +342,7 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
                 del RA_random, DEC_random
 
             else:
-                if gal_position_type[0] != 'true':
+                if gal_position_type[0] not in ['true', 'true_allsky']:
                     raise Exception(f'Unsupported gal_position_type: {gal_position_type[0]} !')
 
             ## output galaxies info
@@ -322,7 +359,7 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
             ### better naming
             output_tmp = output_tmp.add_suffix(f'_input')
             ### add ellipticity based on q and beta if it is single sersic profile
-            if int(output_tmp['axis_ratio_input'][0])!=-999:
+            if (not output_tmp.empty) and (int(output_tmp['axis_ratio_input'][0])!=-999):
                 g_tmp = (1-output_tmp['axis_ratio_input'])/(1+output_tmp['axis_ratio_input'])
                 for gal_rotation_angle in gal_rotation_angles:
                     true_pa_tmp = output_tmp['position_angle_input'] + gal_rotation_angle
@@ -363,7 +400,7 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
 
                 elif star_position_type == 'true':
                     # use true star location
-                    mask_ra = (stars_info['RA'] >= ra_min) & (stars_info['RA'] < ra_max)
+                    mask_ra = _ra_interval_mask(stars_info['RA'].values, ra_min, ra_max)
                     mask_dec = (stars_info['DEC'] >= dec_min) & (stars_info['DEC'] < dec_max)
                     stars_info_selec = stars_info[mask_ra & mask_dec].copy()
                     stars_info_selec.reset_index(drop=True, inplace=True)
@@ -485,13 +522,13 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
 
             # select galaxies
             ## careful one
-            mask_ra = (gals_info[0]['RA'] >= ra_min) & (gals_info[0]['RA'] < ra_max)
+            mask_ra = _ra_interval_mask(gals_info[0]['RA'].values, ra_min, ra_max)
             mask_dec = (gals_info[0]['DEC'] >= dec_min) & (gals_info[0]['DEC'] < dec_max)
             gals_info_careful_selec = gals_info[0][mask_ra & mask_dec].copy()
             gals_info_careful_selec.reset_index(drop=True, inplace=True)
             ## casual one
             if gals_info[1] is not None:
-                mask_ra = (gals_info[1]['RA'] >= ra_min) & (gals_info[1]['RA'] < ra_max)
+                mask_ra = _ra_interval_mask(gals_info[1]['RA'].values, ra_min, ra_max)
                 mask_dec = (gals_info[1]['DEC'] >= dec_min) & (gals_info[1]['DEC'] < dec_max)
                 gals_info_casual_selec = gals_info[1][mask_ra & mask_dec].copy()
                 gals_info_casual_selec.reset_index(drop=True, inplace=True)
@@ -554,7 +591,7 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
                 del RA_random, DEC_random
 
             else:
-                if gal_position_type[0] != 'true':
+                if gal_position_type[0] not in ['true', 'true_allsky']:
                     raise Exception(f'Unsupported gal_position_type: {gal_position_type[0]} !')
 
             ## output galaxies info
@@ -571,7 +608,7 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
             ### better naming
             output_tmp = output_tmp.add_suffix(f'_input')
             ### add ellipticity based on q and beta if it is single sersic profile
-            if int(output_tmp['axis_ratio_input'][0])!=-999:
+            if (not output_tmp.empty) and (int(output_tmp['axis_ratio_input'][0])!=-999):
                 g_tmp = (1-output_tmp['axis_ratio_input'])/(1+output_tmp['axis_ratio_input'])
                 for gal_rotation_angle in gal_rotation_angles:
                     true_pa_tmp = output_tmp['position_angle_input'] + gal_rotation_angle
@@ -613,7 +650,7 @@ def RunParallel_PSFNoisySkyImages(survey, outpath_dir, outcata_dir, rng_seed, ma
 
                 elif star_position_type == 'true':
                     # use true star location
-                    mask_ra = (stars_info['RA'] >= ra_min) & (stars_info['RA'] < ra_max)
+                    mask_ra = _ra_interval_mask(stars_info['RA'].values, ra_min, ra_max)
                     mask_dec = (stars_info['DEC'] >= dec_min) & (stars_info['DEC'] < dec_max)
                     stars_info_selec = stars_info[mask_ra & mask_dec].copy()
                     stars_info_selec.reset_index(drop=True, inplace=True)
