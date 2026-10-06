@@ -211,17 +211,22 @@ def _PSFNoisySkyImages_KiDS_sameExpo(para_list):
     if (False in outpath_image_exist_list):
 
         # simple canvas based on the galaxy sky positions
-        RA_gals = gals_info_band[0]['RA'].values
-        DEC_gals = gals_info_band[0]['DEC'].values
-        if gals_info_band[1] is not None:
-            RA_gals = np.hstack([RA_gals, gals_info_band[1]['RA'].values])
-            DEC_gals = np.hstack([DEC_gals, gals_info_band[1]['DEC'].values])
-        RA_min = np.amin(RA_gals)
-        RA_max = np.amax(RA_gals)
-        DEC_min = np.amin(DEC_gals)
-        DEC_max = np.amax(DEC_gals)
-        canvas = ObjModule.SimpleCanvas(RA_min, RA_max, DEC_min, DEC_max, pixel_scale)
-        del RA_gals, DEC_gals, RA_min, RA_max, DEC_min, DEC_max
+        if gal_position_type[0] == 'true_allsky':
+            RA0, DEC0 = ObjModule.parse_true_allsky_center(tile_label)
+            canvas = ObjModule.SimpleCanvas(RA0-1., RA0+1., DEC0-1., DEC0+1., pixel_scale)
+            del RA0, DEC0
+        else:
+            RA_gals = gals_info_band[0]['RA'].values
+            DEC_gals = gals_info_band[0]['DEC'].values
+            if gals_info_band[1] is not None:
+                RA_gals = np.hstack([RA_gals, gals_info_band[1]['RA'].values])
+                DEC_gals = np.hstack([DEC_gals, gals_info_band[1]['DEC'].values])
+            RA_min = np.amin(RA_gals)
+            RA_max = np.amax(RA_gals)
+            DEC_min = np.amin(DEC_gals)
+            DEC_max = np.amax(DEC_gals)
+            canvas = ObjModule.SimpleCanvas(RA_min, RA_max, DEC_min, DEC_max, pixel_scale)
+            del RA_gals, DEC_gals, RA_min, RA_max, DEC_min, DEC_max
 
         # star image
         if (stars_info_band is not None):
@@ -427,15 +432,19 @@ def _PSFNoisySkyImages_KiDS_singleExpo(para_list):
     if (False in outpath_image_exist_list):
 
         # a list of canvas based on galaxy sky positions
-        RA_gals = gals_info_band[0]['RA'].values
-        DEC_gals = gals_info_band[0]['DEC'].values
-        if gals_info_band[1] is not None:
-            RA_gals = np.hstack([RA_gals, gals_info_band[1]['RA'].values])
-            DEC_gals = np.hstack([DEC_gals, gals_info_band[1]['DEC'].values])
-        RA0 = (np.amax(RA_gals) + np.amin(RA_gals))/2.
-        DEC0 = (np.amax(DEC_gals) + np.amin(DEC_gals))/2.
+        if gal_position_type[0] == 'true_allsky':
+            RA0, DEC0 = ObjModule.parse_true_allsky_center(tile_label)
+        else:
+            RA_gals = gals_info_band[0]['RA'].values
+            DEC_gals = gals_info_band[0]['DEC'].values
+            if gals_info_band[1] is not None:
+                RA_gals = np.hstack([RA_gals, gals_info_band[1]['RA'].values])
+                DEC_gals = np.hstack([DEC_gals, gals_info_band[1]['DEC'].values])
+            RA0 = (np.amax(RA_gals) + np.amin(RA_gals))/2.
+            DEC0 = (np.amax(DEC_gals) + np.amin(DEC_gals))/2.
+            del RA_gals, DEC_gals
         canvases_list = KiDSModule.getKiDScanvases(RA0, DEC0, SimpleCam, id_exposure=id_exposure)
-        del RA_gals, DEC_gals, RA0, DEC0
+        del RA0, DEC0
 
         # all desired images
         for i_ima, outpath_image_exist in enumerate(outpath_image_exist_list):
@@ -602,15 +611,19 @@ def _PSFNoisySkyImages_KiDS_varChips(para_list):
     if (False in outpath_image_exist_list):
 
         # a list of canvas based on galaxy sky positions
-        RA_gals = gals_info_band[0]['RA'].values
-        DEC_gals = gals_info_band[0]['DEC'].values
-        if gals_info_band[1] is not None:
-            RA_gals = np.hstack([RA_gals, gals_info_band[1]['RA'].values])
-            DEC_gals = np.hstack([DEC_gals, gals_info_band[1]['DEC'].values])
-        RA0 = (np.amax(RA_gals) + np.amin(RA_gals))/2.
-        DEC0 = (np.amax(DEC_gals) + np.amin(DEC_gals))/2.
+        if gal_position_type[0] == 'true_allsky':
+            RA0, DEC0 = ObjModule.parse_true_allsky_center(tile_label)
+        else:
+            RA_gals = gals_info_band[0]['RA'].values
+            DEC_gals = gals_info_band[0]['DEC'].values
+            if gals_info_band[1] is not None:
+                RA_gals = np.hstack([RA_gals, gals_info_band[1]['RA'].values])
+                DEC_gals = np.hstack([DEC_gals, gals_info_band[1]['DEC'].values])
+            RA0 = (np.amax(RA_gals) + np.amin(RA_gals))/2.
+            DEC0 = (np.amax(DEC_gals) + np.amin(DEC_gals))/2.
+            del RA_gals, DEC_gals
         canvases_list = KiDSModule.getKiDScanvases(RA0, DEC0, SimpleCam, id_exposure=id_exposure)
-        del RA_gals, DEC_gals, RA0, DEC0
+        del RA0, DEC0
 
         # all desired images
         for i_ima, outpath_image_exist in enumerate(outpath_image_exist_list):
