@@ -1,0 +1,38 @@
+# One UNIONS twin run: a real ShapePipe campaign re-simulated with known shear.
+# `python -m unions.twin unions/config.yaml` builds everything this file names.
+
+# The real campaign: exposures/NNNNNNNp{,.weight,.flag}.fits.fz and
+# tiles/CFIS.XXX.YYY.r.fits (+ .weight.fits.fz). The tiles' HISTORY cards say
+# which exposures each tile coadds.
+campaign_dir: /scratch/cdaley/sp-staging/fir-b0269
+
+# v2.0.0 star catalogue (HATS parquet dataset): per-CCD PSF size and shape.
+stars: /project/rrg-kyi/cdaley/unions/data/v2.x/v2.0.0/catalogs/stars/dataset
+
+# SKiLLS input galaxies; mag_column is used as CFHT r.
+skills: /scratch/cdaley/imsim/inputs/skills/galaxies/skills_v07Ds_input_part*.feather
+mag_column: r_SDSS_apparent_corr
+mag_range: [18.5, 26.0]
+
+# Galaxy layout: a square lattice on the sky (tangent plane at the campaign
+# centre) over the tiles' footprint.
+layout: grid
+grid_spacing_arcsec: 10.0
+
+# Shear branches: name 1{z,p,m}2{z,p,m} gives (g1, g2) in units of `shear`.
+shear: 0.025
+branches: [1z2z, 1p2z, 1m2z, 1z2p, 1z2m]
+
+# Seeds galaxy selection, position angles and per-CCD noise.
+seed: 1
+
+# Output: {output_root}/{branch}_{layout}_{sim_num}/ per branch, shared inputs
+# in {output_root}/{layout}_{sim_num}_shared/, and the PSF dictionary.
+output_root: /scratch/cdaley/imsim/sims
+sim_num: 1
+psf_dict: /scratch/cdaley/imsim/sims/psf_dict.pickle
+
+# PSF stamp size in the dictionary (ShapePipe's PSFEx PSF_SIZE).
+psf_stamp: 51
+
+swarp: /scratch/cdaley/imsim/env/swarp/bin/swarp
