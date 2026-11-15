@@ -16,10 +16,13 @@ For each real exposure of the campaign and each of its 40 CCDs:
 - **Noise:** Gaussian, zero background, at the rms measured on the real CCD
   (mesh-median sky removed, 3σ-clipped std over good pixels). Seeded by
   exposure and CCD only, so every shear branch has the same noise.
-- **PSF:** constant over the CCD: an elliptical Moffat whose HSM size T and
-  ellipticity (g1, g2), measured in the sky frame as ShapePipe measures them,
-  equal the median of that CCD's stars in the v2.0.0 star catalogue
-  (`HSM_*_STAR`, `HSM_FLAG_STAR == 0`). One Moffat β for the campaign, chosen
+- **PSF:** an elliptical Moffat, constant over the CCD in its pixel frame,
+  whose HSM size T and ellipticity (g1, g2) at the CCD centre, measured in the
+  sky frame as ShapePipe measures them, equal the median of that CCD's stars
+  in the v2.0.0 star catalogue (`HSM_*_STAR`, `HSM_FLAG_STAR == 0`). Being
+  constant in pixels, the one dictionary stamp is the PSF at every position on
+  the CCD; on the sky it varies with the WCS's local distortion (≤ 0.8 % in
+  scale, ≤ 0.004 in shear between a CCD's centre and corners). One Moffat β for the campaign, chosen
   so the Moffat's HSM radial fourth moment ρ4 equals the stars' median
   `HSM_RHO4_STAR`.
 - **Galaxies:** a square lattice on the sky (tangent plane at the campaign

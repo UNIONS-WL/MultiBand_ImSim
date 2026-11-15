@@ -2,9 +2,9 @@
 
 Re-simulate a real ShapePipe campaign with known shear. Every CCD of every real
 exposure keeps its WCS (overscan trimmed), zero point, weight and flag maps,
-and gets SKiLLS galaxies on a sky lattice, sheared, convolved with a constant
-elliptical Moffat PSF matched to that CCD's stars in the v2.0.0 star
-catalogue, plus Gaussian noise at the CCD's measured sky rms on zero
+and gets SKiLLS galaxies on a sky lattice, sheared, convolved with an
+elliptical Moffat PSF, constant in the CCD's pixel frame and matched at the
+CCD centre to that CCD's stars in the v2.0.0 star catalogue, plus Gaussian noise at the CCD's measured sky rms on zero
 background. The noise depends on exposure and CCD only, so all shear branches
 share it. Exposures are coadded onto the real tiles' pixel grids with SWarp,
 as the real tiles are. The output is ShapePipe's image-simulation input layout
@@ -286,6 +286,9 @@ def draw_ccd(task):
     fwhm, pg1, pg2 = fit_psf(target, beta, local, size)
     psf = psf_profile(beta, fwhm, pg1, pg2)
     stamp = draw_psf(psf, local, size)
+    # The PSF is constant in the CCD's pixel frame, so the one stamp is the
+    # PSF at every position; on the sky it follows the WCS's local distortion.
+    psf_pix = local.toImage(psf)
     shapes = _hsm_columns(_hsm_row(stamp, hsm_sky(stamp, local), local), "PSF")
 
     # galaxies whose stamp may touch the CCD
@@ -304,9 +307,10 @@ def draw_ccd(task):
         lw = gwcs.local(pos)
         flux = 10 ** (-0.4 * (row["MAG_R"] - zp))
         gal = galaxy(row).withFlux(flux)
+        psf_here = lw.toWorld(psf_pix).withFlux(1.0)
         n = None
         for b, (g1, g2) in run.branches.items():
-            obj = galsim.Convolve(gal.shear(g1=g1, g2=g2), psf)
+            obj = galsim.Convolve(gal.shear(g1=g1, g2=g2), psf_here)
             n = n or min(obj.getGoodImageSize(lw.minLinearScale()), STAMP_MAX)
             st = obj.drawImage(nx=n, ny=n, wcs=lw, center=pos)
             overlap = st.bounds & canvases[b].bounds

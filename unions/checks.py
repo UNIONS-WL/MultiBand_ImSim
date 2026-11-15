@@ -8,8 +8,8 @@
    and aperture fluxes are compared with the truth positions (through the
    written headers' WCS) and the expected fluxes, in the exposures (at PHOTZP)
    and in the coadd (at zero point 30).
-2. PSF dictionary: the point sources at each CCD's centre are compared with
-   that CCD's dictionary stamp.
+2. PSF dictionary: the point sources at each CCD's centre and corners are
+   compared with that CCD's dictionary stamp.
 3. Noise: the rms of the built sims' CCDs, by the same estimator, against the
    real CCDs' rms; the coadd's rms against the real tile's and its weight map.
 4. Branches: difference images between branches of the built run, away from
@@ -46,8 +46,13 @@ def measure(image, x, y, half=10, rap=30):
     return cx, cy, ap[(xx ** 2 + yy ** 2) <= rap ** 2].sum()
 
 
+STAR_PIXELS = [(1025, 2307), (101, 101), (1948, 4512)]  # centre and two corners
+
+
 def kat_truth(run, tile, spacing=60.0, mag=20.0):
-    """Round bright galaxies on a lattice in the tile, point sources at CCD centres."""
+    """Round bright galaxies on a lattice in the tile; point sources at the
+    centre and two corners of every CCD of the tile's exposures, on pixel
+    centres, keeping those more than 20 arcsec from one another."""
     header, exps = run.tiles[tile]
     w = WCS(header)
     n = header["NAXIS1"]
@@ -55,25 +60,36 @@ def kat_truth(run, tile, spacing=60.0, mag=20.0):
     g = np.arange(step / 2, n, step)
     gx, gy = np.meshgrid(g, g)
     gra, gdec = w.all_pix2world(gx.ravel(), gy.ravel(), 1)
-    sra, sdec = [], []
+    stars = []
     for e in exps:
         with fits.open(run.exp_path(e)) as f:
             for c in range(twin.N_CCD):
-                h = twin.ccd_header(f[c + 1].header)
-                r, d = WCS(h).all_pix2world([[1025.0, 2307.0]], 1)[0]
-                sra.append(r)
-                sdec.append(d)
-    sra, sdec = np.array(sra), np.array(sdec)
-    far = np.array([np.min(np.hypot((sra - r) * np.cos(np.radians(d)), sdec - d)) > 20 / 3600
-                    for r, d in zip(gra, gdec)])
-    gra, gdec = gra[far], gdec[far]
-    ra, dec = np.concatenate([gra, sra]), np.concatenate([gdec, sdec])
-    star = np.r_[np.zeros(gra.size, bool), np.ones(sra.size, bool)]
+                cw = WCS(twin.ccd_header(f[c + 1].header))
+                for x, y in STAR_PIXELS:
+                    r, d = cw.all_pix2world([[x, y]], 1)[0]
+                    stars.append((r, d, int(e), c, x, y))
+
+    def sep(r, d, ra, dec):
+        return np.hypot((np.asarray(ra) - r) * np.cos(np.radians(d)), np.asarray(dec) - d)
+
+    kept = []
+    for s in stars:
+        if not kept or sep(s[0], s[1], [k[0] for k in kept], [k[1] for k in kept]).min() > 20 / 3600:
+            kept.append(s)
+    kept = np.array(kept)
+    far = np.array([sep(r, d, kept[:, 0], kept[:, 1]).min() > 20 / 3600 for r, d in zip(gra, gdec)])
+    ns, ng = len(kept), far.sum()
+    star = np.r_[np.zeros(ng, bool), np.ones(ns, bool)]
     return Table({
-        "ID": np.arange(ra.size), "RA": ra, "DEC": dec, "STAR": star,
-        "MAG_R": np.full(ra.size, mag), "SERSIC_N": np.ones(ra.size),
-        "HLR_ARCSEC": np.where(star, 1e-3, 0.3), "Q": np.ones(ra.size),
-        "PA_DEG": np.zeros(ra.size),
+        "ID": np.arange(ng + ns), "RA": np.r_[gra[far], kept[:, 0]],
+        "DEC": np.r_[gdec[far], kept[:, 1]], "STAR": star,
+        "STAR_EXP": np.r_[np.full(ng, -1), kept[:, 2]].astype(int),
+        "STAR_CCD": np.r_[np.full(ng, -1), kept[:, 3]].astype(int),
+        "STAR_X": np.r_[np.zeros(ng), kept[:, 4]].astype(int),
+        "STAR_Y": np.r_[np.zeros(ng), kept[:, 5]].astype(int),
+        "MAG_R": np.full(ng + ns, mag), "SERSIC_N": np.ones(ng + ns),
+        "HLR_ARCSEC": np.where(star, 1e-3, 0.3), "Q": np.ones(ng + ns),
+        "PA_DEG": np.zeros(ng + ns),
     })
 
 
@@ -85,6 +101,7 @@ def kat(cfg, tile, jobs):
     exps = run.tiles[tile][1]
     (run.shared / "psf").mkdir(parents=True, exist_ok=True)
     twin.TRUTH = kat_truth(run, tile)
+    twin.TRUTH.write(run.shared / "truth.fits", overwrite=True)
     twin.sky_rms = lambda data, good: 0.0
     targets, rho4 = twin.star_targets(run, sorted({e for _, es in run.tiles.values() for e in es}))
     beta = twin.moffat_beta(rho4)
@@ -110,14 +127,14 @@ def kat(cfg, tile, jobs):
                 on = (x > 0) & (x < twin.CCD_NX) & (y > 0) & (y < twin.CCD_NY)
                 for i in np.flatnonzero(on):
                     cx, cy, fl = measure(f[c + 1].data, x[i], y[i])
-                    expect = zero[i] * 10 ** (0.4 * h["PHOTZP"]) * (1 if truth["STAR"][i] else trunc)
+                    expect = zero[i] * 10 ** (0.4 * h["PHOTZP"]) * trunc
                     out.append(("exp", e, c, truth["STAR"][i], cx - x[i], cy - y[i], fl / expect))
     image = fits.getdata(sim / "images" / "SP_tiles" / f"CFIS_simu_image-{twin.tile_name(tile)}.fits")
     th = fits.getheader(sim / "images" / "SP_tiles" / f"CFIS_simu_image-{twin.tile_name(tile)}.fits")
     x, y = WCS(th).all_world2pix(truth["RA"], truth["DEC"], 1)
     for i in range(len(truth)):
         cx, cy, fl = measure(image, x[i], y[i])
-        expect = zero[i] * 1e12 * (1 if truth["STAR"][i] else trunc)
+        expect = zero[i] * 1e12 * trunc
         out.append(("tile", tile, -1, truth["STAR"][i], cx - x[i], cy - y[i], fl / expect))
     res = pd.DataFrame(out, columns=["where", "exp", "ccd", "star", "dx", "dy", "flux_ratio"]).dropna()
     res.to_parquet(run.shared / "kat_astrometry.parquet")
@@ -131,23 +148,24 @@ def kat(cfg, tile, jobs):
     with open(cfg["psf_dict"], "rb") as fh:
         psf = pickle.load(fh)
     dev = []
-    for e in exps:
+    for st in truth[truth["STAR"]]:
+        e, c, x, y = st["STAR_EXP"], st["STAR_CCD"], st["STAR_X"], st["STAR_Y"]
         with fits.open(sim / "images" / "SP_exp" / twin.exp_file("image", e)) as f:
-            for c in range(twin.N_CCD):
-                cut = f[c + 1].data[2307 - 26:2307 + 25, 1025 - 26:1025 + 25].astype(float)
-                cut /= cut.sum()
-                ref = psf[f"{e}-{c}"]["VIGNET"]
-                local = galsim.GSFitsWCS(header=f[c + 1].header).local(galsim.PositionD(1025, 2307))
-                m = twin.hsm_sky(cut, local)
-                s = psf[f"{e}-{c}"]["SHAPES"]
-                dev.append((np.abs(cut - ref).max() / ref.max(),
-                            2 * m.moments_sigma ** 2 / s["HSM_T_PSF"] - 1,
-                            m.observed_shape.g1 - s["HSM_G1_PSF"],
-                            m.observed_shape.g2 - s["HSM_G2_PSF"]))
+            cut = f[c + 1].data[y - 26:y + 25, x - 26:x + 25].astype(float)
+            local = galsim.GSFitsWCS(header=f[c + 1].header).local(galsim.PositionD(x, y))
+        cut /= cut.sum()
+        ref = psf[f"{e}-{c}"]["VIGNET"]
+        m = twin.hsm_sky(cut, local)
+        r = twin.hsm_sky(ref, local)
+        dev.append((np.abs(cut - ref).max() / ref.max(),
+                    m.moments_sigma ** 2 / r.moments_sigma ** 2 - 1,
+                    m.observed_shape.g1 - r.observed_shape.g1,
+                    m.observed_shape.g2 - r.observed_shape.g2))
     dev = np.array(dev)
-    print(f"2. PSF dictionary vs point source drawn at the CCD centre ({len(dev)} CCDs): "
-          f"max |pixel diff|/peak {dev[:, 0].max():.2e}; max |dT/T| {np.abs(dev[:, 1]).max():.2e}; "
-          f"max |dg1| {np.abs(dev[:, 2]).max():.2e}; max |dg2| {np.abs(dev[:, 3]).max():.2e}")
+    print(f"2. PSF dictionary stamp vs point source drawn at a CCD's centre or corner "
+          f"({len(dev)} sources): max |pixel diff|/peak {dev[:, 0].max():.2e}; "
+          f"max |dT/T| {np.abs(dev[:, 1]).max():.2e}; max |dg1| {np.abs(dev[:, 2]).max():.2e}; "
+          f"max |dg2| {np.abs(dev[:, 3]).max():.2e} (HSM, sky frame at the source)")
 
 
 def noise(cfg, tile):
