@@ -24,7 +24,9 @@ For each real exposure of the campaign and each of its 40 CCDs:
   the CCD; on the sky it varies with the WCS's local distortion (≤ 0.8 % in
   scale, ≤ 0.004 in shear between a CCD's centre and corners). One Moffat β for the campaign, chosen
   so the Moffat's HSM radial fourth moment ρ4 equals the stars' median
-  `HSM_RHO4_STAR`.
+  `HSM_RHO4_STAR`. A CCD with no v2 stars (about 2 % of them) had no PSF
+  model in the data: it is drawn with its exposure's median PSF and left out
+  of the PSF dictionary, so ShapePipe drops its epochs as it did in the data.
 - **Galaxies:** a square lattice on the sky (tangent plane at the campaign
   centre) over the tiles' footprint, each point a SKiLLS galaxy drawn at random
   from those with `mag_column` in `mag_range`: Sérsic n, half-light radius
