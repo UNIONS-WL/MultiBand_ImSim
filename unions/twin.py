@@ -323,10 +323,12 @@ def draw_ccd(task):
         flux = 10 ** (-0.4 * (row["MAG_R"] - zp))
         gal = galaxy(row).withFlux(flux)
         psf_here = lw.toWorld(psf_pix).withFlux(1.0)
-        n = None
+        # One stamp size per galaxy, from its unsheared image, so a branch
+        # drawn alone matches the same branch drawn with the others.
+        n = min(galsim.Convolve(gal, psf_here).getGoodImageSize(lw.minLinearScale()),
+                STAMP_MAX)
         for b, (g1, g2) in run.branches.items():
             obj = galsim.Convolve(gal.shear(g1=g1, g2=g2), psf_here)
-            n = n or min(obj.getGoodImageSize(lw.minLinearScale()), STAMP_MAX)
             st = obj.drawImage(nx=n, ny=n, wcs=lw, center=pos)
             overlap = st.bounds & canvases[b].bounds
             if overlap.isDefined():
