@@ -219,11 +219,11 @@ def make_truth(run):
 
 
 def make_stars(run):
-    """Input stars (`stars:` in the config): a stellar population catalogue
+    """Input stars (`star_population:` in the config): a stellar population catalogue
     without positions (SKiLLS's TRILEGAL files, `..._<N>deg2_...`), placed
     uniformly at random over the tiles at the catalogue's density, each star
     a catalogue row drawn at random, in `mag_range` of the catalogue's r."""
-    cfg = run.cfg["stars"]
+    cfg = run.cfg["star_population"]
     cat = feather.read_table(cfg["catalogue"]).to_pandas()
     area = float(re.search(r"_([\d.]+)deg2_", Path(cfg["catalogue"]).name).group(1))
     cat = cat[(cat["r"] >= cfg["mag_range"][0]) & (cat["r"] < cfg["mag_range"][1])]
@@ -264,7 +264,7 @@ PSFEX_STAR_THRESH, PSFEX_CHI2_THRESH = 22, 2  # ShapePipe's v2 psfex_interp gate
 
 def star_targets(run, exps):
     """Per-(exposure, CCD) median star T, g1, g2, and the campaign median rho4."""
-    d = pads.dataset(run.cfg["stars"], format="parquet")
+    d = pads.dataset(run.cfg["star_population"], format="parquet")
     cols = ["EXPOSURE", "CCD_NB", "HSM_T_STAR", "HSM_G1_STAR", "HSM_G2_STAR",
             "HSM_RHO4_STAR", "HSM_FLAG_STAR"]
     s = d.to_table(columns=cols, filter=pads.field("EXPOSURE").isin([int(e) for e in exps]))
@@ -661,7 +661,7 @@ def main():
         os.replace(str(truth_path) + ".tmp", truth_path)
     TRUTH = Table.read(truth_path)
     print(f"truth: {len(TRUTH)} galaxies", flush=True)
-    if "stars" in run.cfg:
+    if "star_population" in run.cfg:
         stars_path = run.shared / "stars.fits"
         if not stars_path.exists():
             make_stars(run).write(str(stars_path) + ".tmp", format="fits")

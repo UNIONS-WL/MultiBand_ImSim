@@ -24,7 +24,7 @@ layout: skills
 # Stars: SKiLLS's TRILEGAL population at the pointing nearest the campaign's
 # galactic latitude (fir-b0269: b = +25, l = 191; this file: b = +28, l = 229),
 # uniformly placed at its density. Brighter stars are masked in the data.
-stars:
+star_population:
   catalogue: /scratch/cdaley/imsim/inputs/skills/stars/stars/trilegal_9band_135.0_0.0_10deg2_default.feather
   mag_range: [17.5, 26.0]
 

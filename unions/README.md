@@ -55,7 +55,7 @@ For each real exposure of the campaign and each of its 40 CCDs:
   - `layout: skills`: every SKiLLS galaxy in `mag_range` at its own position
     and position angle, the SKiLLS patch moved onto the campaign by keeping
     each galaxy's offset in the tangent plane, so the blending is SKiLLS's.
-- **Stars** (`stars`, optional): a stellar population catalogue without
+- **Stars** (`star_population`, optional): a stellar population catalogue without
   positions (SKiLLS's TRILEGAL files), stars placed uniformly at random over
   the tiles at the catalogue's density, each a catalogue row drawn at random
   in `mag_range`, drawn as the PSF and identical in every shear branch. With
@@ -80,7 +80,7 @@ For each real exposure of the campaign and each of its 40 CCDs:
     basic_info.txt                                `g_cosmic = g1 g2`, branch, inputs
     tiles.txt                                     tiles built so far, `XXX.YYY`
 {output_root}/{layout}_{sim_num}_shared/          branch-independent inputs
-    truth.fits, stars.fits (with `stars`), SP_exp/ (weights, flags), psf/, ccds.parquet (per-CCD rms and PSF),
+    truth.fits, stars.fits (with `star_population`), SP_exp/ (weights, flags), psf/, ccds.parquet (per-CCD rms and PSF),
     psfex/ (psf.model psfex: each CCD's PSFEx model in the trimmed frame)
 {psf_dict}                                        "<exp>-<ccd>" -> {VIGNET, SHAPES}
 ```
