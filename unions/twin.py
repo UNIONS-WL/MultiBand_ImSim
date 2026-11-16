@@ -264,7 +264,7 @@ PSFEX_STAR_THRESH, PSFEX_CHI2_THRESH = 22, 2  # ShapePipe's v2 psfex_interp gate
 
 def star_targets(run, exps):
     """Per-(exposure, CCD) median star T, g1, g2, and the campaign median rho4."""
-    d = pads.dataset(run.cfg["star_population"], format="parquet")
+    d = pads.dataset(run.cfg["stars"], format="parquet")
     cols = ["EXPOSURE", "CCD_NB", "HSM_T_STAR", "HSM_G1_STAR", "HSM_G2_STAR",
             "HSM_RHO4_STAR", "HSM_FLAG_STAR"]
     s = d.to_table(columns=cols, filter=pads.field("EXPOSURE").isin([int(e) for e in exps]))
