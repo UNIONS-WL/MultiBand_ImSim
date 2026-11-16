@@ -1,0 +1,27 @@
+# Run 2: 150 survey-interior tiles of typical depth around tile 253.246
+# (RA 147-155, Dec 30-36; 157 exposures, 5-10 per tile), staged from CADC.
+# Same model as config.yaml; its own sim_num and PSF dictionary.
+
+campaign_dir: /scratch/cdaley/imsim/staging/g2-253-246
+
+stars: /project/rrg-kyi/cdaley/unions/data/v2.x/v2.0.0/catalogs/stars/dataset
+
+skills: /scratch/cdaley/imsim/inputs/skills/galaxies/skills_v07Ds_input_part*.feather
+mag_column: r_SDSS_apparent_corr
+mag_range: [18.5, 26.0]
+
+layout: grid
+grid_spacing_arcsec: 10.0
+
+shear: 0.025
+branches: [1z2z, 1p2z, 1m2z, 1z2p, 1z2m]
+
+seed: 2
+
+output_root: /scratch/cdaley/imsim/sims
+sim_num: 2
+psf_dict: /scratch/cdaley/imsim/sims/psf_dict_grid_2.pickle
+
+psf_stamp: 51
+
+swarp: /scratch/cdaley/imsim/env/swarp/bin/swarp

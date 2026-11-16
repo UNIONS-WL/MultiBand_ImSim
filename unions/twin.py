@@ -11,6 +11,11 @@ as the real tiles are. The output is ShapePipe's image-simulation input layout
 (see README.md).
 
     python -m unions.twin unions/config.yaml [-j N] [--tiles 205.239 206.239]
+        [--shard I N]
+
+`--shard I N` draws only every N-th exposure (offset I) and stops; shards can
+run at once on separate machines, and a final run without it coadds the tiles
+and writes the PSF dictionary.
 """
 
 import argparse
@@ -463,6 +468,8 @@ def main():
     p.add_argument("config")
     p.add_argument("-j", "--jobs", type=int, default=os.cpu_count())
     p.add_argument("--tiles", nargs="+", help="build only these tiles and their exposures")
+    p.add_argument("--shard", nargs=2, type=int, metavar=("I", "N"),
+                   help="draw only exposures I, I+N, ... and stop before the tiles")
     args = p.parse_args()
 
     with open(args.config) as f:
@@ -480,6 +487,8 @@ def main():
     TRUTH = Table.read(truth_path)
     print(f"truth: {len(TRUTH)} galaxies", flush=True)
 
+    if args.shard:
+        exps = exps[args.shard[0]::args.shard[1]]
     todo = [e for e in exps if not done_exposure(run, e)]
     if todo:
         targets, rho4 = star_targets(run, sorted({e for _, es in run.tiles.values() for e in es}))
@@ -495,6 +504,8 @@ def main():
                       f"rms {r['RMS']:.2f}", flush=True)
             pool.map(assemble, [(run, e, rows[e]) for e in todo])
         print(f"exposures written: {todo}", flush=True)
+    if args.shard:
+        return
 
     todo = [(t, b) for t in tiles if not done_tile(run, t) for b in run.branches]
     if todo:
