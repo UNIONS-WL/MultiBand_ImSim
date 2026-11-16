@@ -356,6 +356,8 @@ class CcdPsf:
         position's local WCS."""
         if self._model is None:
             return [lw.toWorld(self._pixel) for lw in locals_]
+        if not len(locals_):
+            return []
         # ShapePipe's multi-epoch interpolation evaluates at 0-based pixels
         stamps = psfex_stamps(self._model, np.asarray(x) - 1, np.asarray(y) - 1)
         return [lw.toWorld(pixel_profile(s)) for s, lw in zip(stamps, locals_)]

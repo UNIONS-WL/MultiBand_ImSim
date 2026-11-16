@@ -39,7 +39,7 @@ seed: 1
 # in {output_root}/{layout}_{sim_num}_shared/, and the PSF dictionary.
 output_root: /scratch/cdaley/imsim/sims
 sim_num: 1-blended
-psf_dict: /scratch/cdaley/imsim/sims/psf_dict_grid_1-blended.pickle
+psf_dict: /scratch/cdaley/imsim/sims/psf_dict_skills_1-blended.pickle
 
 # PSF drawn into the images and handed to ShapePipe as the truth (README.md):
 #   model: moffat   a Moffat per CCD matched to the CCD's v2.0.0 stars
