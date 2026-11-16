@@ -102,9 +102,9 @@ def tile_name(tile):
 
 # --- truth catalogue -----------------------------------------------------------
 
-def lattice(run):
-    """Sky lattice over the union of the tiles, as (ra, dec) in degrees."""
-    spacing = run.cfg["grid_spacing_arcsec"] / 3600
+def footprint(run, scale):
+    """Tangent-plane WCS at the campaign centre with pixel `scale` (deg), each
+    tile's (WCS, nx, ny), and the footprint's bounding box in that plane."""
     centres = []
     walls = {}
     for tile, (header, _) in run.tiles.items():
@@ -116,37 +116,73 @@ def lattice(run):
     lat.wcs.ctype = ["RA---TAN", "DEC--TAN"]
     lat.wcs.crval = [np.median(centres[:, 0]), np.median(centres[:, 1])]
     lat.wcs.crpix = [0.0, 0.0]
-    lat.wcs.cdelt = [-spacing, spacing]
+    lat.wcs.cdelt = [-scale, scale]
     corners = []
     for w, nx, ny in walls.values():
         c = w.all_pix2world([[0.5, 0.5], [nx + 0.5, 0.5], [0.5, ny + 0.5], [nx + 0.5, ny + 0.5]], 1)
         corners.append(lat.all_world2pix(c, 1))
     corners = np.concatenate(corners)
-    lo, hi = np.floor(corners.min(0)), np.ceil(corners.max(0))
-    i, j = np.meshgrid(np.arange(lo[0], hi[0] + 1), np.arange(lo[1], hi[1] + 1))
-    ra, dec = lat.all_pix2world(i.ravel(), j.ravel(), 1)
-    keep = np.zeros(ra.size, bool)
+    return lat, walls, np.floor(corners.min(0)), np.ceil(corners.max(0))
+
+
+def in_footprint(walls, ra, dec):
+    keep = np.zeros(np.size(ra), bool)
     for w, nx, ny in walls.values():
         x, y = w.all_world2pix(ra, dec, 1)
         keep |= (x > 0.5) & (x < nx + 0.5) & (y > 0.5) & (y < ny + 0.5)
+    return keep
+
+
+def lattice(run):
+    """Sky lattice over the union of the tiles, as (ra, dec) in degrees."""
+    lat, walls, lo, hi = footprint(run, run.cfg["grid_spacing_arcsec"] / 3600)
+    i, j = np.meshgrid(np.arange(lo[0], hi[0] + 1), np.arange(lo[1], hi[1] + 1))
+    ra, dec = lat.all_pix2world(i.ravel(), j.ravel(), 1)
+    keep = in_footprint(walls, ra, dec)
     return ra[keep], dec[keep]
 
 
-def make_truth(run):
-    """Lattice positions with SKiLLS galaxies drawn at random."""
-    cfg = run.cfg
-    ra, dec = lattice(run)
-    cols = ["index", "Re_arcsec", "BA", "shape/sersic_n", cfg["mag_column"]]
+def transplant(run, ra, dec):
+    """Move sky positions from their own patch onto the campaign: the offsets
+    in the tangent plane at the patch centre become offsets in the tangent
+    plane at the campaign centre, so separations are kept. Returns the moved
+    (ra, dec) and which of them fall in the tiles."""
+    lat, walls, _, _ = footprint(run, 1 / 3600)
+    src = lat.deepcopy()
+    src.wcs.crval = [0.5 * (ra.min() + ra.max()), 0.5 * (dec.min() + dec.max())]
+    x, y = src.all_world2pix(ra, dec, 1)
+    ra2, dec2 = lat.all_pix2world(x, y, 1)
+    return ra2, dec2, in_footprint(walls, ra2, dec2)
+
+
+def read_skills(cfg, cols):
     parts = []
     for path in sorted(glob.glob(cfg["skills"])):
         t = feather.read_table(path, columns=cols).to_pandas()
         mag = t[cfg["mag_column"]]
         parts.append(t[(mag >= cfg["mag_range"][0]) & (mag < cfg["mag_range"][1])])
-    skills = pd.concat(parts, ignore_index=True)
+    return pd.concat(parts, ignore_index=True)
+
+
+def make_truth(run):
+    """Input galaxies. `layout: grid`: lattice positions with SKiLLS galaxies
+    drawn at random and random position angles. `layout: skills`: every SKiLLS
+    galaxy in `mag_range` at its own position and position angle, its patch
+    moved onto the campaign (`transplant`), so blending is SKiLLS's."""
+    cfg = run.cfg
+    cols = ["index", "Re_arcsec", "BA", "shape/sersic_n", cfg["mag_column"]]
     rng = np.random.default_rng([cfg["seed"], 0])
-    pick = skills.iloc[rng.choice(len(skills), size=ra.size, replace=False)]
+    if cfg["layout"] == "grid":
+        ra, dec = lattice(run)
+        skills = read_skills(cfg, cols)
+        pick = skills.iloc[rng.choice(len(skills), size=ra.size, replace=False)]
+        pa = rng.uniform(0, 180, ra.size)
+    else:
+        skills = read_skills(cfg, cols + ["ra", "dec", "PA_random"])
+        ra, dec, on = transplant(run, skills["ra"].to_numpy(), skills["dec"].to_numpy())
+        pick, ra, dec = skills[on], ra[on], dec[on]
+        pa = pick["PA_random"].to_numpy()
     q = np.clip(pick["BA"].to_numpy(), Q_MIN, Q_MAX)
-    pa = rng.uniform(0, 180, ra.size)
     g = (1 - q) / (1 + q)
     mag = pick[cfg["mag_column"]].to_numpy()
     return Table(
@@ -166,7 +202,7 @@ def make_truth(run):
             "G2_INT": g * np.sin(np.radians(2 * pa)),
         },
         meta={
-            "SPACING": cfg["grid_spacing_arcsec"],
+            "LAYOUT": cfg["layout"],
             "MAGCOL": cfg["mag_column"],
             "SEED": cfg["seed"],
             "COMMENT": [
@@ -180,6 +216,30 @@ def make_truth(run):
             ],
         },
     )
+
+
+def make_stars(run):
+    """Input stars (`stars:` in the config): a stellar population catalogue
+    without positions (SKiLLS's TRILEGAL files, `..._<N>deg2_...`), placed
+    uniformly at random over the tiles at the catalogue's density, each star
+    a catalogue row drawn at random, in `mag_range` of the catalogue's r."""
+    cfg = run.cfg["stars"]
+    cat = feather.read_table(cfg["catalogue"]).to_pandas()
+    area = float(re.search(r"_([\d.]+)deg2_", Path(cfg["catalogue"]).name).group(1))
+    cat = cat[(cat["r"] >= cfg["mag_range"][0]) & (cat["r"] < cfg["mag_range"][1])]
+    lat, walls, lo, hi = footprint(run, 1 / 3600)
+    box = np.prod(hi - lo) / 3600 ** 2  # deg^2, tangent plane
+    rng = np.random.default_rng([run.cfg["seed"], 1])
+    n = rng.poisson(len(cat) / area * box)
+    x, y = rng.uniform(lo[0], hi[0], n), rng.uniform(lo[1], hi[1], n)
+    ra, dec = lat.all_pix2world(x, y, 1)
+    on = in_footprint(walls, ra, dec)
+    pick = cat.iloc[rng.choice(len(cat), size=on.sum())]
+    mag = pick["r"].to_numpy()
+    return Table({"ID": np.arange(on.sum()), "RA": ra[on], "DEC": dec[on],
+                  "CATALOGUE_INDEX": pick["index"].to_numpy().astype(np.int64),
+                  "MAG_R": mag, "FLUX_ZP30": 10 ** (-0.4 * (mag - 30))},
+                 meta={"CATALOG": Path(cfg["catalogue"]).name, "SEED": run.cfg["seed"]})
 
 
 # --- PSF --------------------------------------------------------------------
@@ -374,7 +434,7 @@ def gal_info(row, flux):
             "Re": row["RE_ARCSEC"], "axis_ratio": row["Q"]}
 
 
-TRUTH = None  # set before the worker pool forks
+TRUTH = STARS = None  # set before the worker pool forks
 
 
 def draw_ccd(task):
@@ -398,18 +458,20 @@ def draw_ccd(task):
     psf = ccd_psf(run, exp, ccd, inputs, gwcs, centre)
     shapes = _hsm_columns(_hsm_row(psf.stamp, hsm_sky(psf.stamp, local), local), "PSF")
 
-    # galaxies whose stamp may touch the CCD
-    ra0, dec0 = wcs.all_pix2world([[centre.x, centre.y]], 1)[0]
-    near = (np.abs(TRUTH["DEC"] - dec0) < 0.16) & (
-        np.abs((TRUTH["RA"] - ra0) * np.cos(np.radians(dec0))) < 0.16)
-    cand = TRUTH[near]
-    x, y = wcs.all_world2pix(cand["RA"], cand["DEC"], 1)
-    margin = STAMP_MAX / 2
-    on = (x > -margin) & (x < CCD_NX + margin) & (y > -margin) & (y < CCD_NY + margin)
-    cand, x, y = cand[on], x[on], y[on]
-    locals_ = [gwcs.local(galsim.PositionD(xi, yi)) for xi, yi in zip(x, y)]
-    psfs = psf.profiles(x, y, locals_)
+    def on_ccd(table):
+        """Rows whose stamp may touch the CCD, their pixel positions and PSFs."""
+        ra0, dec0 = wcs.all_pix2world([[centre.x, centre.y]], 1)[0]
+        near = (np.abs(table["DEC"] - dec0) < 0.16) & (
+            np.abs((table["RA"] - ra0) * np.cos(np.radians(dec0))) < 0.16)
+        t = table[near]
+        x, y = wcs.all_world2pix(t["RA"], t["DEC"], 1)
+        m = STAMP_MAX / 2
+        on = (x > -m) & (x < CCD_NX + m) & (y > -m) & (y < CCD_NY + m)
+        t, x, y = t[on], x[on], y[on]
+        locals_ = [gwcs.local(galsim.PositionD(xi, yi)) for xi, yi in zip(x, y)]
+        return t, x, y, locals_, psf.profiles(x, y, locals_)
 
+    cand, x, y, locals_, psfs = on_ccd(TRUTH)
     canvases = {b: galsim.ImageF(CCD_NX, CCD_NY) for b in run.branches}
     for row, xi, yi, lw, psf_here in zip(cand, x, y, locals_, psfs):
         pos = galsim.PositionD(xi, yi)
@@ -423,14 +485,29 @@ def draw_ccd(task):
             if overlap.isDefined():
                 canvases[b][overlap] += st[overlap]
 
-    noise = np.random.default_rng([run.cfg["seed"], int(exp), ccd]).normal(
-        0.0, rms, (CCD_NY, CCD_NX)).astype(np.float32)
+    stars = galsim.ImageF(CCD_NX, CCD_NY)
+    n_star = 0
+    if STARS is not None:
+        cand_s, xs, ys, locals_s, psfs_s = on_ccd(STARS)
+        n_star = len(cand_s)
+        for row, xi, yi, lw, psf_here in zip(cand_s, xs, ys, locals_s, psfs_s):
+            star = psf_here.withFlux(10 ** (-0.4 * (row["MAG_R"] - zp)))
+            n = min(star.getGoodImageSize(lw.minLinearScale()), STAMP_MAX)
+            st = star.drawImage(nx=n, ny=n, wcs=lw, center=galsim.PositionD(xi, yi),
+                                method=psf.method)
+            overlap = st.bounds & stars.bounds
+            if overlap.isDefined():
+                stars[overlap] += st[overlap]
+
+    # the same in every branch: noise, and the stars
+    common = np.random.default_rng([run.cfg["seed"], int(exp), ccd]).normal(
+        0.0, rms, (CCD_NY, CCD_NX)).astype(np.float32) + stars.array
     work.mkdir(parents=True, exist_ok=True)
     for b in run.branches:
-        np.save(work / f"{ccd:02d}-{b}.npy", canvases[b].array + noise)
+        np.save(work / f"{ccd:02d}-{b}.npy", canvases[b].array + common)
     np.save(work / f"{ccd:02d}-weight.npy", weight)
     np.save(work / f"{ccd:02d}-flag.npy", flag)
-    return {"EXPOSURE": int(exp), "CCD": ccd, "RMS": rms, "N_GAL": len(cand),
+    return {"EXPOSURE": int(exp), "CCD": ccd, "RMS": rms, "N_GAL": len(cand), "N_STAR": n_star,
             "PSF_MODEL": run.cfg["psf"]["model"], **psf.row,
             "HEADER": header.tostring(), "VIGNET": psf.stamp, "SHAPES": shapes}
 
@@ -577,13 +654,20 @@ def main():
     run.shared.mkdir(parents=True, exist_ok=True)
     (run.shared / "psf").mkdir(exist_ok=True)
 
-    global TRUTH
+    global TRUTH, STARS
     truth_path = run.shared / "truth.fits"
     if not truth_path.exists():
         make_truth(run).write(str(truth_path) + ".tmp", format="fits")
         os.replace(str(truth_path) + ".tmp", truth_path)
     TRUTH = Table.read(truth_path)
     print(f"truth: {len(TRUTH)} galaxies", flush=True)
+    if "stars" in run.cfg:
+        stars_path = run.shared / "stars.fits"
+        if not stars_path.exists():
+            make_stars(run).write(str(stars_path) + ".tmp", format="fits")
+            os.replace(str(stars_path) + ".tmp", stars_path)
+        STARS = Table.read(stars_path)
+        print(f"stars: {len(STARS)}", flush=True)
 
     if args.shard:
         exps = exps[args.shard[0]::args.shard[1]]

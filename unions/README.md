@@ -43,13 +43,23 @@ For each real exposure of the campaign and each of its 40 CCDs:
     `{shared}/psfex/` instead of the dictionary. Models failing ShapePipe's v2
     gate (fewer than 22 accepted stars or χ² > 2) are still drawn; the CCD
     table records `PSFEX_GATE`.
-- **Galaxies:** a square lattice on the sky (tangent plane at the campaign
-  centre) over the tiles' footprint, each point a SKiLLS galaxy drawn at random
-  from those with `mag_column` in `mag_range`, with a random position angle,
-  built by MultiBand_ImSim's own `_build_galaxy_model`
-  (`modules/ImSimObject.py`): Sérsic n, half-light radius √q·Re, axis ratio q,
-  truncated at 5 half-light radii with the catalogue flux assigned to the
-  untruncated profile. Flux on a CCD is 10^(−0.4 (mag − PHOTZP)) ADU. No stars.
+- **Galaxies** (`layout`), each built by MultiBand_ImSim's own
+  `_build_galaxy_model` (`modules/ImSimObject.py`): Sérsic n, half-light
+  radius √q·Re, axis ratio q, truncated at 5 half-light radii with the
+  catalogue flux assigned to the untruncated profile. Flux on a CCD is
+  10^(−0.4 (mag − PHOTZP)) ADU.
+  - `layout: grid`: a square lattice on the sky (tangent plane at the campaign
+    centre) over the tiles' footprint, each point a SKiLLS galaxy drawn at
+    random from those with `mag_column` in `mag_range`, at a random position
+    angle. Isolated galaxies.
+  - `layout: skills`: every SKiLLS galaxy in `mag_range` at its own position
+    and position angle, the SKiLLS patch moved onto the campaign by keeping
+    each galaxy's offset in the tangent plane, so the blending is SKiLLS's.
+- **Stars** (`stars`, optional): a stellar population catalogue without
+  positions (SKiLLS's TRILEGAL files), stars placed uniformly at random over
+  the tiles at the catalogue's density, each a catalogue row drawn at random
+  in `mag_range`, drawn as the PSF and identical in every shear branch. With
+  stars, ShapePipe can fit PSFEx to the simulation as it does to the data.
 - **Tiles:** the branch's exposures are coadded with SWarp onto each real
   tile's pixel grid (its WCS and size), as the real tiles were made:
   `COMBINE_TYPE WEIGHTED`, `RESAMPLING_TYPE LANCZOS3`, fluxes scaled to zero
@@ -70,7 +80,7 @@ For each real exposure of the campaign and each of its 40 CCDs:
     basic_info.txt                                `g_cosmic = g1 g2`, branch, inputs
     tiles.txt                                     tiles built so far, `XXX.YYY`
 {output_root}/{layout}_{sim_num}_shared/          branch-independent inputs
-    truth.fits, SP_exp/ (weights, flags), psf/, ccds.parquet (per-CCD rms and PSF),
+    truth.fits, stars.fits (with `stars`), SP_exp/ (weights, flags), psf/, ccds.parquet (per-CCD rms and PSF),
     psfex/ (psf.model psfex: each CCD's PSFEx model in the trimmed frame)
 {psf_dict}                                        "<exp>-<ccd>" -> {VIGNET, SHAPES}
 ```
@@ -108,11 +118,15 @@ srun ... python -m unions.checks unions/config.yaml
 
 ## What an m from these sims covers
 
-A lattice of isolated galaxies brighter than `mag_range`'s faint limit, no
-stars, and the true PSF handed to the shape measurement. The m measured on them
-is the bias of the shape measurement and of the selection on isolated galaxies.
-It leaves out blending, galaxies below the detection limit, and PSF-model
-error. The PSF configs are rungs of one ladder on the same campaign, galaxies,
-noise and shears: `config.yaml` (Moffat, constant per CCD),
-`config_psfex.yaml` (the real PSFEx model at each CCD centre),
-`config_psfex_vary.yaml` (the real PSFEx model at each galaxy).
+The configs are rungs of one ladder on the same campaign, noise and shears,
+each changing one ingredient:
+
+| config | galaxies | PSF | what its m covers |
+|---|---|---|---|
+| `config.yaml` | lattice, r 18.5–26 | Moffat per CCD, true PSF given | shape measurement and selection on isolated galaxies |
+| `config_psfex.yaml` | same galaxies | real PSFEx model at the CCD centre, given | + the real PSF's profile |
+| `config_psfex_vary.yaml` | same galaxies | real PSFEx model at each galaxy, given | + its variation across the CCD |
+| `config_blended.yaml` | SKiLLS positions, r 15–27, + TRILEGAL stars | as above, but ShapePipe fits PSFEx to the simulated stars | + blending, undetected galaxies, PSF-model error |
+
+The three lattice rungs share galaxies and noise object by object, so their
+differences in m can be measured on matched objects with little noise.

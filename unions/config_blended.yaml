@@ -1,0 +1,58 @@
+# One UNIONS twin run: a real ShapePipe campaign re-simulated with known shear.
+# The blended rung above config_psfex_vary.yaml: same campaign, PSF, noise and
+# shears; galaxies at SKiLLS's own positions down to r = 27, and stars, so
+# ShapePipe fits PSFEx to the simulated stars as it does on data.
+# `python -m unions.twin unions/config_blended.yaml` builds everything this file names.
+
+# The real campaign: exposures/NNNNNNNp{,.weight,.flag}.fits.fz and
+# tiles/CFIS.XXX.YYY.r.fits (+ .weight.fits.fz). The tiles' HISTORY cards say
+# which exposures each tile coadds.
+campaign_dir: /scratch/cdaley/sp-staging/fir-b0269
+
+# v2.0.0 star catalogue (HATS parquet dataset): per-CCD PSF size and shape.
+stars: /project/rrg-kyi/cdaley/unions/data/v2.x/v2.0.0/catalogs/stars/dataset
+
+# SKiLLS input galaxies; mag_column is used as CFHT r.
+skills: /scratch/cdaley/imsim/inputs/skills/galaxies/skills_v07Ds_input_part*.feather
+mag_column: r_SDSS_apparent_corr
+mag_range: [15.0, 27.0]
+
+# Galaxy layout: every SKiLLS galaxy at its own position, the SKiLLS patch
+# moved onto the campaign with separations kept.
+layout: skills
+
+# Stars: SKiLLS's TRILEGAL population at the pointing nearest the campaign's
+# galactic latitude (fir-b0269: b = +25, l = 191; this file: b = +28, l = 229),
+# uniformly placed at its density. Brighter stars are masked in the data.
+stars:
+  catalogue: /scratch/cdaley/imsim/inputs/skills/stars/stars/trilegal_9band_135.0_0.0_10deg2_default.feather
+  mag_range: [17.5, 26.0]
+
+# Shear branches: name 1{z,p,m}2{z,p,m} gives (g1, g2) in units of `shear`.
+shear: 0.025
+branches: [1z2z, 1p2z, 1m2z, 1z2p, 1z2m]
+
+# Seeds galaxy selection, position angles and per-CCD noise.
+seed: 1
+
+# Output: {output_root}/{branch}_{layout}_{sim_num}/ per branch, shared inputs
+# in {output_root}/{layout}_{sim_num}_shared/, and the PSF dictionary.
+output_root: /scratch/cdaley/imsim/sims
+sim_num: 1-blended
+psf_dict: /scratch/cdaley/imsim/sims/psf_dict_grid_1-blended.pickle
+
+# PSF drawn into the images and handed to ShapePipe as the truth (README.md):
+#   model: moffat   a Moffat per CCD matched to the CCD's v2.0.0 stars
+#   model: psfex    the PSFEx model ShapePipe fitted to the real exposure, read
+#                   from psfex_models/<exp>.tar (ShapePipe's persisted exposure
+#                   PSF products); vary: false takes the model at the CCD centre
+#                   everywhere on the CCD, vary: true evaluates it at each galaxy
+psf:
+  model: psfex
+  psfex_models: /scratch/cdaley/imsim/inputs/exp_psf
+  vary: true
+
+# PSF stamp size in the dictionary (ShapePipe's PSFEx PSF_SIZE).
+psf_stamp: 51
+
+swarp: /scratch/cdaley/imsim/env/swarp/bin/swarp
