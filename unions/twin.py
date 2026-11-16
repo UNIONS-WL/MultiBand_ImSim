@@ -279,6 +279,31 @@ def galaxy(row):
 TRUTH = None  # set before the worker pool forks
 
 
+def ccd_psf(run, header, target, beta):
+    """One CCD's PSF: Moffat parameters, dictionary stamp and its HSM shapes."""
+    gwcs = galsim.GSFitsWCS(header=header)
+    size = run.cfg["psf_stamp"]
+    centre = galsim.PositionD((CCD_NX + 1) / 2, (CCD_NY + 1) / 2)
+    local = gwcs.local(centre)
+    fwhm, pg1, pg2 = fit_psf(target[:3], beta, local, size)
+    psf = psf_profile(beta, fwhm, pg1, pg2)
+    stamp = draw_psf(psf, local, size)
+    # The PSF is constant in the CCD's pixel frame, so the one stamp is the
+    # PSF at every position; on the sky it follows the WCS's local distortion.
+    psf_pix = local.toImage(psf)
+    shapes = _hsm_columns(_hsm_row(stamp, hsm_sky(stamp, local), local), "PSF")
+    return gwcs, local, (fwhm, pg1, pg2), stamp, psf_pix, shapes
+
+
+def psf_row(task):
+    """One CCD's PSF dictionary row, without drawing it."""
+    run, exp, ccd, target, beta = task
+    header = ccd_header(fits.getheader(run.exp_path(exp), ccd + 1))
+    *_, stamp, _, shapes = ccd_psf(run, header, target, beta)
+    return {"EXPOSURE": int(exp), "CCD": ccd, "VIGNET": stamp, "SHAPES": shapes,
+            "HAS_STARS": target[3]}
+
+
 def draw_ccd(task):
     """Draw one CCD in every branch; write image, weight and flag arrays."""
     run, exp, ccd, target, beta = task
@@ -292,19 +317,9 @@ def draw_ccd(task):
     rms = sky_rms(data, (weight > 0) & (flag == 0))
 
     wcs = WCS(header)
-    gwcs = galsim.GSFitsWCS(header=header)
     zp = header["PHOTZP"]
-    size = run.cfg["psf_stamp"]
-
     centre = galsim.PositionD((CCD_NX + 1) / 2, (CCD_NY + 1) / 2)
-    local = gwcs.local(centre)
-    fwhm, pg1, pg2 = fit_psf(target[:3], beta, local, size)
-    psf = psf_profile(beta, fwhm, pg1, pg2)
-    stamp = draw_psf(psf, local, size)
-    # The PSF is constant in the CCD's pixel frame, so the one stamp is the
-    # PSF at every position; on the sky it follows the WCS's local distortion.
-    psf_pix = local.toImage(psf)
-    shapes = _hsm_columns(_hsm_row(stamp, hsm_sky(stamp, local), local), "PSF")
+    gwcs, local, (fwhm, pg1, pg2), stamp, psf_pix, shapes = ccd_psf(run, header, target, beta)
 
     # galaxies whose stamp may touch the CCD
     ra0, dec0 = wcs.all_pix2world([[centre.x, centre.y]], 1)[0]
@@ -443,18 +458,24 @@ def done_tile(run, tile):
                for s in run.sim.values())
 
 
+def write_psf_dict(run, rows):
+    """The PSF dictionary ShapePipe's fake PSF reads: "<exp>-<ccd>" -> {VIGNET, SHAPES},
+    for the CCDs with stars."""
+    psf_dict = {f"{r['EXPOSURE']}-{r['CCD']}": {"VIGNET": r["VIGNET"], "SHAPES": r["SHAPES"]}
+                for r in rows if r.get("HAS_STARS", True)}
+    tmp = Path(str(run.cfg["psf_dict"]) + ".tmp")
+    with open(tmp, "wb") as f:
+        pickle.dump(psf_dict, f)
+    os.replace(tmp, run.cfg["psf_dict"])
+
+
 def finish(run):
     """PSF dictionary (CCDs with stars), CCD table, tile lists and per-sim metadata from what exists."""
     rows = []
     for path in sorted((run.shared / "psf").glob("*.pickle")):
         with open(path, "rb") as f:
             rows += pickle.load(f)
-    psf_dict = {f"{r['EXPOSURE']}-{r['CCD']}": {"VIGNET": r["VIGNET"], "SHAPES": r["SHAPES"]}
-                for r in rows if r.get("HAS_STARS", True)}
-    tmp = Path(run.cfg["psf_dict"] + ".tmp")
-    with open(tmp, "wb") as f:
-        pickle.dump(psf_dict, f)
-    os.replace(tmp, run.cfg["psf_dict"])
+    write_psf_dict(run, rows)
     table = pd.DataFrame([{k: v for k, v in r.items() if k not in ("VIGNET", "SHAPES")}
                           | {k: r["SHAPES"][k] for k in ("HSM_T_PSF", "HSM_G1_PSF", "HSM_G2_PSF")}
                           for r in rows])
@@ -482,12 +503,24 @@ def main():
     p.add_argument("--tiles", nargs="+", help="build only these tiles and their exposures")
     p.add_argument("--shard", nargs=2, type=int, metavar=("I", "N"),
                    help="draw only exposures I, I+N, ... and stop before the tiles")
+    p.add_argument("--psf-dict-only", action="store_true",
+                   help="write only the PSF dictionary, drawing nothing")
     args = p.parse_args()
 
     with open(args.config) as f:
         run = Run(yaml.safe_load(f))
     tiles = args.tiles or list(run.tiles)
     exps = sorted({e for t in tiles for e in run.tiles[t][1]})
+    if args.psf_dict_only:
+        all_exps = sorted({e for _, es in run.tiles.values() for e in es})
+        targets, rho4 = star_targets(run, all_exps)
+        beta = moffat_beta(rho4)
+        tasks = [(run, e, c, ccd_target(targets, int(e), c), beta)
+                 for e in exps for c in range(N_CCD)]
+        with Pool(args.jobs) as pool:
+            write_psf_dict(run, pool.map(psf_row, tasks))
+        return
+
     run.shared.mkdir(parents=True, exist_ok=True)
     (run.shared / "psf").mkdir(exist_ok=True)
 
