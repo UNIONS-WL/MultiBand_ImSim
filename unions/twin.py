@@ -164,7 +164,7 @@ def make_truth(run):
                 " +u West, +v North; PA_DEG is measured from +u toward +v.",
                 "HLR_ARCSEC = RE_ARCSEC * sqrt(Q), the circularised Sersic"
                 " half-light radius drawn (SKiLLS convention), truncated at"
-                f" {TRUNC_FACTOR} HLR with untruncated flux FLUX_ZP30.",
+                f" {TRUNC_FACTOR} HLR; FLUX_ZP30 is the flux drawn inside the truncation.",
             ],
         },
     )

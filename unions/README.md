@@ -85,3 +85,11 @@ Known-answer checks of a built run:
 ```bash
 srun ... python -m unions.checks unions/config.yaml
 ```
+
+## What an m from these sims covers
+
+A lattice of isolated galaxies brighter than `mag_range`'s faint limit, no
+stars, the true PSF handed to the shape measurement, and a PSF constant over
+each CCD. The m measured on them is the bias of the shape measurement and of
+the selection on isolated galaxies. It leaves out blending, galaxies below the
+detection limit, and PSF-model error.
