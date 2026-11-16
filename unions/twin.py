@@ -2,10 +2,11 @@
 
 Re-simulate a real ShapePipe campaign with known shear. Every CCD of every real
 exposure keeps its WCS (overscan trimmed), zero point, weight and flag maps,
-and gets SKiLLS galaxies on a sky lattice, sheared, convolved with an
-elliptical Moffat PSF, constant in the CCD's pixel frame and matched at the
-CCD centre to that CCD's stars in the v2.0.0 star catalogue, plus Gaussian noise at the CCD's measured sky rms on zero
-background. The noise depends on exposure and CCD only, so all shear branches
+and gets SKiLLS galaxies on a sky lattice, built by MultiBand_ImSim's own
+galaxy construction, sheared, convolved with the CCD's PSF (a Moffat matched to
+the CCD's v2.0.0 stars, or the PSFEx model ShapePipe fitted to the real
+exposure; see the PSF section), plus Gaussian noise at the CCD's measured sky
+rms on zero background. The noise depends on exposure and CCD only, so all shear branches
 share it. Exposures are coadded onto the real tiles' pixel grids with SWarp,
 as the real tiles are. The output is ShapePipe's image-simulation input layout
 (see README.md).
@@ -25,9 +26,11 @@ import pickle
 import re
 import shutil
 import subprocess
+import tarfile
 import warnings
 from multiprocessing import Pool
 from pathlib import Path
+from types import SimpleNamespace
 
 import galsim
 import numpy as np
@@ -39,6 +42,7 @@ from astropy.io import fits
 from astropy.table import Table
 from astropy.wcs import WCS, FITSFixedWarning
 from shapepipe.modules.psfex_interp_package.psfex_interp import (
+    PSFExInterpolator,
     _hsm_columns,
     _hsm_row,
 )
@@ -49,6 +53,7 @@ from modules.ImSimObject import (
     SERSIC_N_MAX,
     SERSIC_N_MIN,
     TRUNC_FACTOR,
+    _build_galaxy_model,
 )
 
 warnings.simplefilter("ignore", FITSFixedWarning)
@@ -167,15 +172,35 @@ def make_truth(run):
             "COMMENT": [
                 "Shapes are reduced shears g in GalSim's local sky frame:"
                 " +u West, +v North; PA_DEG is measured from +u toward +v.",
-                "HLR_ARCSEC = RE_ARCSEC * sqrt(Q), the circularised Sersic"
-                " half-light radius drawn (SKiLLS convention), truncated at"
-                f" {TRUNC_FACTOR} HLR; FLUX_ZP30 is the flux drawn inside the truncation.",
+                "Galaxies are built by MultiBand_ImSim's _build_galaxy_model:"
+                " HLR_ARCSEC = RE_ARCSEC * sqrt(Q) is the circularised Sersic"
+                f" half-light radius, truncated at {TRUNC_FACTOR} HLR; FLUX_ZP30 is"
+                " the untruncated profile's flux, so the drawn flux is the part"
+                " inside the truncation.",
             ],
         },
     )
 
 
 # --- PSF --------------------------------------------------------------------
+#
+# Each CCD's PSF is a CcdPsf: the profile to convolve a galaxy with at a CCD
+# position, the stamp ShapePipe is handed as the truth (`psf_dict`), and the
+# method that draws the convolution. Two models (`psf.model` in the config):
+#
+# - moffat: an elliptical Moffat, constant in the CCD's pixel frame, matched at
+#   the CCD centre to the median HSM T, g1, g2 of the CCD's v2.0.0 stars, one
+#   beta for the campaign from the stars' median rho4. Drawn with the pixel.
+# - psfex: the PSFEx model ShapePipe fitted to the real exposure's stars on that
+#   CCD. Its basis already holds the pixel response (PSF_SAMP = 1), so it is
+#   drawn without one. `vary: false` takes the model at the CCD centre as the
+#   PSF everywhere on the CCD (the dictionary stamp is then exact); `vary: true`
+#   evaluates it at each galaxy, as ShapePipe's multi-epoch psfex_interp does,
+#   and ShapePipe is handed the models themselves (`{shared}/psfex/`).
+
+PSFEX_PATTERN = "star_split_ratio_80"  # ShapePipe's ME_DOT_PSF_PATTERN
+PSFEX_STAR_THRESH, PSFEX_CHI2_THRESH = 22, 2  # ShapePipe's v2 psfex_interp gate
+
 
 def star_targets(run, exps):
     """Per-(exposure, CCD) median star T, g1, g2, and the campaign median rho4."""
@@ -227,6 +252,91 @@ def fit_psf(target, beta, local, size):
     return fwhm, g1, g2
 
 
+def psfex_name(exp, ccd):
+    return f"{PSFEX_PATTERN}-{int(exp)}-{ccd}.psf"
+
+
+def read_psfex(source, exp, ccd):
+    """A real exposure's PSFEx model for one CCD, from the exposure's persisted
+    PSF tar (`{source}/{exp}.tar`, as ShapePipe's exp_persist writes it)."""
+    with tarfile.open(Path(source) / f"{int(exp)}.tar") as t:
+        return fits.HDUList.fromstring(t.extractfile(psfex_name(exp, ccd)).read())
+
+
+def psfex_in_sim_frame(hdul):
+    """The model with its polynomial origin moved from the real CCD's pixel
+    frame (overscan included, where ShapePipe fitted it) to the trimmed CCD's."""
+    hdul[1].header["POLZERO1"] -= OVERSCAN_X
+    return hdul
+
+
+def psfex_stamps(path, x, y):
+    """The PSFEx model in `path` at pixels (x, y) of its frame, by ShapePipe's
+    own interpolation (PSFExInterpolator.interpsfex), ungated, unit sum."""
+    gate = SimpleNamespace(_star_thresh=0, _chi2_thresh=np.inf, _w_log=None)
+    stamps = PSFExInterpolator.interpsfex(gate, str(path), np.column_stack([x, y]))
+    return stamps / stamps.sum(axis=(1, 2), keepdims=True)
+
+
+def pixel_profile(stamp):
+    """A stamp as a profile in pixel units, centred on its central pixel."""
+    return galsim.InterpolatedImage(galsim.Image(stamp, scale=1.0), normalization="flux")
+
+
+class CcdPsf:
+    """The PSF of one CCD: the dictionary stamp, the drawing method, metadata
+    for the CCD table, and `profiles`, the PSF at image positions in sky units."""
+
+    def __init__(self, stamp, method, row, pixel=None, model=None):
+        self.stamp, self.method, self.row = stamp, method, row
+        self._pixel, self._model = pixel, model
+
+    def profiles(self, x, y, locals_):
+        """PSF profiles at 1-based image positions (x, y), through each
+        position's local WCS."""
+        if self._model is None:
+            return [lw.toWorld(self._pixel) for lw in locals_]
+        # ShapePipe's multi-epoch interpolation evaluates at 0-based pixels
+        stamps = psfex_stamps(self._model, np.asarray(x) - 1, np.asarray(y) - 1)
+        return [lw.toWorld(pixel_profile(s)) for s, lw in zip(stamps, locals_)]
+
+
+def ccd_psf(run, exp, ccd, inputs, gwcs, centre):
+    """This CCD's PSF under the run's `psf` config."""
+    cfg = run.cfg["psf"]
+    local = gwcs.local(centre)
+    size = run.cfg["psf_stamp"]
+    if cfg["model"] == "moffat":
+        target, beta = inputs
+        fwhm, pg1, pg2 = fit_psf(target, beta, local, size)
+        psf = psf_profile(beta, fwhm, pg1, pg2)
+        row = {"PSF_BETA": beta, "PSF_FWHM": fwhm, "PSF_G1_IN": pg1, "PSF_G2_IN": pg2,
+               "STAR_T": target[0], "STAR_G1": target[1], "STAR_G2": target[2]}
+        return CcdPsf(draw_psf(psf, local, size), "auto", row, pixel=local.toImage(psf))
+    hdul = psfex_in_sim_frame(read_psfex(cfg["psfex_models"], exp, ccd))
+    path = run.shared / "psfex" / psfex_name(exp, ccd)
+    path.parent.mkdir(exist_ok=True)
+    hdul.writeto(path, overwrite=True)
+    h = hdul[1].header
+    row = {"PSFEX_ACCEPTED": h["ACCEPTED"], "PSFEX_CHI2": h["CHI2"],
+           "PSFEX_GATE": h["ACCEPTED"] >= PSFEX_STAR_THRESH and h["CHI2"] <= PSFEX_CHI2_THRESH}
+    stamp = psfex_stamps(path, [centre.x - 1], [centre.y - 1])[0]
+    if cfg["vary"]:
+        return CcdPsf(stamp, "no_pixel", row, model=path)
+    return CcdPsf(stamp, "no_pixel", row, pixel=pixel_profile(stamp))
+
+
+def psf_inputs(run, exps):
+    """Per-(exposure, CCD) inputs that ccd_psf needs beyond the CCD itself."""
+    if run.cfg["psf"]["model"] != "moffat":
+        return {(e, c): None for e in exps for c in range(N_CCD)}
+    targets, rho4 = star_targets(run, sorted({e for _, es in run.tiles.values() for e in es}))
+    beta = moffat_beta(rho4)
+    print(f"stars: median rho4 {rho4:.4f} -> Moffat beta {beta:.3f}", flush=True)
+    return {(e, c): (tuple(targets.loc[(int(e), c)].iloc[:3]), beta)
+            for e in exps for c in range(N_CCD)}
+
+
 # --- exposures --------------------------------------------------------------
 
 def ccd_header(real):
@@ -258,12 +368,10 @@ def sky_rms(data, good, mesh=128):
     return float(sigma)
 
 
-def galaxy(row):
-    """Unsheared SKiLLS Sersic galaxy, in the sky frame."""
-    hlr = row["HLR_ARCSEC"]
-    gal = galsim.Sersic(n=row["SERSIC_N"], half_light_radius=hlr,
-                        trunc=TRUNC_FACTOR * hlr, flux_untruncated=True)
-    return gal.shear(q=row["Q"], beta=row["PA_DEG"] * galsim.degrees)
+def gal_info(row, flux):
+    """A truth row as MultiBand_ImSim's galaxy record (`_build_galaxy_model`)."""
+    return {"r": flux, "position_angle": row["PA_DEG"], "sersic_n": row["SERSIC_N"],
+            "Re": row["RE_ARCSEC"], "axis_ratio": row["Q"]}
 
 
 TRUTH = None  # set before the worker pool forks
@@ -271,7 +379,7 @@ TRUTH = None  # set before the worker pool forks
 
 def draw_ccd(task):
     """Draw one CCD in every branch; write image, weight and flag arrays."""
-    run, exp, ccd, target, beta = task
+    run, exp, ccd, inputs = task
     work = run.shared / "work" / exp
     with fits.open(run.exp_path(exp)) as f:
         real = f[ccd + 1]
@@ -284,17 +392,11 @@ def draw_ccd(task):
     wcs = WCS(header)
     gwcs = galsim.GSFitsWCS(header=header)
     zp = header["PHOTZP"]
-    size = run.cfg["psf_stamp"]
 
     centre = galsim.PositionD((CCD_NX + 1) / 2, (CCD_NY + 1) / 2)
     local = gwcs.local(centre)
-    fwhm, pg1, pg2 = fit_psf(target, beta, local, size)
-    psf = psf_profile(beta, fwhm, pg1, pg2)
-    stamp = draw_psf(psf, local, size)
-    # The PSF is constant in the CCD's pixel frame, so the one stamp is the
-    # PSF at every position; on the sky it follows the WCS's local distortion.
-    psf_pix = local.toImage(psf)
-    shapes = _hsm_columns(_hsm_row(stamp, hsm_sky(stamp, local), local), "PSF")
+    psf = ccd_psf(run, exp, ccd, inputs, gwcs, centre)
+    shapes = _hsm_columns(_hsm_row(psf.stamp, hsm_sky(psf.stamp, local), local), "PSF")
 
     # galaxies whose stamp may touch the CCD
     ra0, dec0 = wcs.all_pix2world([[centre.x, centre.y]], 1)[0]
@@ -305,19 +407,18 @@ def draw_ccd(task):
     margin = STAMP_MAX / 2
     on = (x > -margin) & (x < CCD_NX + margin) & (y > -margin) & (y < CCD_NY + margin)
     cand, x, y = cand[on], x[on], y[on]
+    locals_ = [gwcs.local(galsim.PositionD(xi, yi)) for xi, yi in zip(x, y)]
+    psfs = psf.profiles(x, y, locals_)
 
     canvases = {b: galsim.ImageF(CCD_NX, CCD_NY) for b in run.branches}
-    for row, xi, yi in zip(cand, x, y):
+    for row, xi, yi, lw, psf_here in zip(cand, x, y, locals_, psfs):
         pos = galsim.PositionD(xi, yi)
-        lw = gwcs.local(pos)
-        flux = 10 ** (-0.4 * (row["MAG_R"] - zp))
-        gal = galaxy(row).withFlux(flux)
-        psf_here = lw.toWorld(psf_pix).withFlux(1.0)
+        info = gal_info(row, 10 ** (-0.4 * (row["MAG_R"] - zp)))
         n = None
-        for b, (g1, g2) in run.branches.items():
-            obj = galsim.Convolve(gal.shear(g1=g1, g2=g2), psf_here)
+        for b, g in run.branches.items():
+            obj = _build_galaxy_model(info, "r", 0.0, g, True, psf_here)
             n = n or min(obj.getGoodImageSize(lw.minLinearScale()), STAMP_MAX)
-            st = obj.drawImage(nx=n, ny=n, wcs=lw, center=pos)
+            st = obj.drawImage(nx=n, ny=n, wcs=lw, center=pos, method=psf.method)
             overlap = st.bounds & canvases[b].bounds
             if overlap.isDefined():
                 canvases[b][overlap] += st[overlap]
@@ -329,12 +430,9 @@ def draw_ccd(task):
         np.save(work / f"{ccd:02d}-{b}.npy", canvases[b].array + noise)
     np.save(work / f"{ccd:02d}-weight.npy", weight)
     np.save(work / f"{ccd:02d}-flag.npy", flag)
-    return {
-        "EXPOSURE": int(exp), "CCD": ccd, "RMS": rms, "N_GAL": len(cand),
-        "PSF_BETA": beta, "PSF_FWHM": fwhm, "PSF_G1_IN": pg1, "PSF_G2_IN": pg2,
-        "STAR_T": target[0], "STAR_G1": target[1], "STAR_G2": target[2],
-        "HEADER": header.tostring(), "VIGNET": stamp, "SHAPES": shapes,
-    }
+    return {"EXPOSURE": int(exp), "CCD": ccd, "RMS": rms, "N_GAL": len(cand),
+            "PSF_MODEL": run.cfg["psf"]["model"], **psf.row,
+            "HEADER": header.tostring(), "VIGNET": psf.stamp, "SHAPES": shapes}
 
 
 def exp_file(kind, exp):
@@ -491,11 +589,8 @@ def main():
         exps = exps[args.shard[0]::args.shard[1]]
     todo = [e for e in exps if not done_exposure(run, e)]
     if todo:
-        targets, rho4 = star_targets(run, sorted({e for _, es in run.tiles.values() for e in es}))
-        beta = moffat_beta(rho4)
-        print(f"stars: median rho4 {rho4:.4f} -> Moffat beta {beta:.3f}", flush=True)
-        tasks = [(run, e, c, tuple(targets.loc[(int(e), c)].iloc[:3]), beta)
-                 for e in todo for c in range(N_CCD)]
+        inputs = psf_inputs(run, todo)
+        tasks = [(run, e, c, inputs[(e, c)]) for e in todo for c in range(N_CCD)]
         rows = {e: [] for e in todo}
         with Pool(args.jobs) as pool:
             for r in pool.imap_unordered(draw_ccd, tasks):

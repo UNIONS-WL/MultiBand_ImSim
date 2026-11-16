@@ -29,8 +29,17 @@ seed: 1
 # Output: {output_root}/{branch}_{layout}_{sim_num}/ per branch, shared inputs
 # in {output_root}/{layout}_{sim_num}_shared/, and the PSF dictionary.
 output_root: /scratch/cdaley/imsim/sims
-sim_num: 1
-psf_dict: /scratch/cdaley/imsim/sims/psf_dict.pickle
+sim_num: 1-moffat
+psf_dict: /scratch/cdaley/imsim/sims/psf_dict_grid_1-moffat.pickle
+
+# PSF drawn into the images and handed to ShapePipe as the truth (README.md):
+#   model: moffat   a Moffat per CCD matched to the CCD's v2.0.0 stars
+#   model: psfex    the PSFEx model ShapePipe fitted to the real exposure, read
+#                   from psfex_models/<exp>.tar (ShapePipe's persisted exposure
+#                   PSF products); vary: false takes the model at the CCD centre
+#                   everywhere on the CCD, vary: true evaluates it at each galaxy
+psf:
+  model: moffat
 
 # PSF stamp size in the dictionary (ShapePipe's PSFEx PSF_SIZE).
 psf_stamp: 51

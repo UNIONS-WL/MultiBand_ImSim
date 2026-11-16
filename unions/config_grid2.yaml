@@ -22,6 +22,9 @@ output_root: /scratch/cdaley/imsim/sims
 sim_num: 2
 psf_dict: /scratch/cdaley/imsim/sims/psf_dict_grid_2.pickle
 
+psf:
+  model: moffat
+
 psf_stamp: 51
 
 swarp: /scratch/cdaley/imsim/env/swarp/bin/swarp

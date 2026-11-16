@@ -88,7 +88,8 @@ def kat_truth(run, tile, spacing=60.0, mag=20.0):
         "STAR_X": np.r_[np.zeros(ng), kept[:, 4]].astype(int),
         "STAR_Y": np.r_[np.zeros(ng), kept[:, 5]].astype(int),
         "MAG_R": np.full(ng + ns, mag), "SERSIC_N": np.ones(ng + ns),
-        "HLR_ARCSEC": np.where(star, 1e-3, 0.3), "Q": np.ones(ng + ns),
+        "HLR_ARCSEC": np.where(star, 1e-3, 0.3), "RE_ARCSEC": np.where(star, 1e-3, 0.3),
+        "Q": np.ones(ng + ns),
         "PA_DEG": np.zeros(ng + ns),
     })
 
@@ -103,10 +104,8 @@ def kat(cfg, tile, jobs):
     twin.TRUTH = kat_truth(run, tile)
     twin.TRUTH.write(run.shared / "truth.fits", overwrite=True)
     twin.sky_rms = lambda data, good: 0.0
-    targets, rho4 = twin.star_targets(run, sorted({e for _, es in run.tiles.values() for e in es}))
-    beta = twin.moffat_beta(rho4)
-    tasks = [(run, e, c, tuple(targets.loc[(int(e), c)].iloc[:3]), beta)
-             for e in exps for c in range(twin.N_CCD)]
+    inputs = twin.psf_inputs(run, exps)
+    tasks = [(run, e, c, inputs[(e, c)]) for e in exps for c in range(twin.N_CCD)]
     with Pool(jobs) as pool:
         rows = pool.map(twin.draw_ccd, tasks)
         pool.map(twin.assemble, [(run, e, [r for r in rows if r["EXPOSURE"] == int(e)])
@@ -154,7 +153,10 @@ def kat(cfg, tile, jobs):
             cut = f[c + 1].data[y - 26:y + 25, x - 26:x + 25].astype(float)
             local = galsim.GSFitsWCS(header=f[c + 1].header).local(galsim.PositionD(x, y))
         cut /= cut.sum()
-        ref = psf[f"{e}-{c}"]["VIGNET"]
+        if cfg["psf"].get("vary"):
+            ref = twin.psfex_stamps(run.shared / "psfex" / twin.psfex_name(e, c), [x - 1], [y - 1])[0]
+        else:
+            ref = psf[f"{e}-{c}"]["VIGNET"]
         m = twin.hsm_sky(cut, local)
         r = twin.hsm_sky(ref, local)
         dev.append((np.abs(cut - ref).max() / ref.max(),
