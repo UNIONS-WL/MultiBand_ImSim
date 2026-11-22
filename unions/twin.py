@@ -10,6 +10,13 @@ share it. Exposures are coadded onto the real tiles' pixel grids with SWarp,
 as the real tiles are. The output is ShapePipe's image-simulation input layout
 (see README.md).
 
+Optional config keys change one ingredient each (README.md, "Rungs"):
+`camera: tan` (each CCD's WCS without its distortion), `noise_rms: exposure`
+(one rms per exposure), `masks: none` (unit weight, no flags), `coadd: median`
+(SWarp COMBINE_TYPE MEDIAN), `tiles:` (build only these), and
+`exposures_from: <tag>` (hard-link the exposures and PSFs of sim `<tag>`,
+drawn from the same galaxies, noise and camera, instead of drawing them).
+
     python -m unions.twin unions/config.yaml [-j N] [--tiles 205.239 206.239]
         [--shard I N]
 
@@ -250,6 +257,26 @@ def ccd_header(real):
     return h
 
 
+def undistort(h):
+    """Pure TAN header: the TPV polynomial's affine part folded into CD and
+    CRPIX, its higher orders (the field distortion) dropped.
+
+    TPV maps intermediate coordinates (x, y) = CD (p - CRPIX) to
+    xi = PV1_0 + PV1_1 x + PV1_2 y + ..., eta = PV2_0 + PV2_1 y + PV2_2 x + ...
+    """
+    h = h.copy()
+    lin = np.array([[h["PV1_1"], h["PV1_2"]], [h["PV2_2"], h["PV2_1"]]])
+    cd = lin @ np.array([[h["CD1_1"], h["CD1_2"]], [h["CD2_1"], h["CD2_2"]]])
+    crpix = np.array([h["CRPIX1"], h["CRPIX2"]]) - np.linalg.solve(cd, [h["PV1_0"], h["PV2_0"]])
+    for key in [k for k in h if k.startswith("PV")]:
+        h.remove(key)
+    for i in (1, 2):
+        h[f"CRPIX{i}"] = crpix[i - 1]
+        for j in (1, 2):
+            h[f"CD{i}_{j}"] = cd[i - 1, j - 1]
+    return h
+
+
 def trim(a):
     return a[:CCD_NY, OVERSCAN_X:OVERSCAN_X + CCD_NX]
 
@@ -290,6 +317,10 @@ def draw_ccd(task):
     weight = trim(fits.getdata(run.exp_path(exp, ".weight"), ccd + 1))
     flag = trim(fits.getdata(run.exp_path(exp, ".flag"), ccd + 1))
     rms = sky_rms(data, (weight > 0) & (flag == 0))
+    if run.cfg.get("camera", "real") == "tan":
+        header = undistort(header)
+    if run.cfg.get("masks", "real") == "none":
+        weight, flag = np.ones_like(weight), np.zeros_like(flag)
 
     wcs = WCS(header)
     gwcs = galsim.GSFitsWCS(header=header)
@@ -332,15 +363,13 @@ def draw_ccd(task):
             if overlap.isDefined():
                 canvases[b][overlap] += st[overlap]
 
-    noise = np.random.default_rng([run.cfg["seed"], int(exp), ccd]).normal(
-        0.0, rms, (CCD_NY, CCD_NX)).astype(np.float32)
     work.mkdir(parents=True, exist_ok=True)
     for b in run.branches:
-        np.save(work / f"{ccd:02d}-{b}.npy", canvases[b].array + noise)
+        np.save(work / f"{ccd:02d}-{b}.npy", canvases[b].array)
     np.save(work / f"{ccd:02d}-weight.npy", weight)
     np.save(work / f"{ccd:02d}-flag.npy", flag)
     return {
-        "EXPOSURE": int(exp), "CCD": ccd, "RMS": rms, "N_GAL": len(cand),
+        "EXPOSURE": int(exp), "CCD": ccd, "CCD_RMS": rms, "N_GAL": len(cand),
         "PSF_BETA": beta, "PSF_FWHM": fwhm, "PSF_G1_IN": pg1, "PSF_G2_IN": pg2,
         "STAR_T": target[0], "STAR_G1": target[1], "STAR_G2": target[2], "HAS_STARS": target[3],
         "HEADER": header.tostring(), "VIGNET": stamp, "SHAPES": shapes,
@@ -351,17 +380,34 @@ def exp_file(kind, exp):
     return f"simu_{kind}-{exp}.fits"
 
 
+def noise(run, exp, ccd, rms):
+    """The CCD's Gaussian noise: seeded by exposure and CCD, shared by the branches."""
+    return np.random.default_rng([run.cfg["seed"], int(exp), ccd]).normal(
+        0.0, rms, (CCD_NY, CCD_NX)).astype(np.float32)
+
+
 def assemble(task):
-    """Write one exposure's per-branch images and shared weight and flag."""
+    """Add the noise; write one exposure's per-branch images and shared weight and flag.
+
+    The noise rms is each CCD's measured sky rms, or with `noise_rms: exposure`
+    the median of the exposure's 40 CCD values on every CCD (same seeds).
+    """
     run, exp, rows = task
     work = run.shared / "work" / exp
     primary = fits.getheader(run.exp_path(exp), 0)
-    headers = [fits.Header.fromstring(r["HEADER"]) for r in sorted(rows, key=lambda r: r["CCD"])]
+    rows = sorted(rows, key=lambda r: r["CCD"])
+    headers = [fits.Header.fromstring(r["HEADER"]) for r in rows]
+    exp_rms = float(np.median([r["CCD_RMS"] for r in rows]))
+    for r in rows:
+        r["RMS"] = exp_rms if run.cfg.get("noise_rms", "ccd") == "exposure" else r["CCD_RMS"]
 
     def write(path, part):
         hdus = [fits.PrimaryHDU(header=primary)]
         for ccd, h in enumerate(headers):
-            hdus.append(fits.ImageHDU(np.load(work / f"{ccd:02d}-{part}.npy"), header=h))
+            data = np.load(work / f"{ccd:02d}-{part}.npy")
+            if part in run.branches:
+                data = data + noise(run, exp, ccd, rows[ccd]["RMS"])
+            hdus.append(fits.ImageHDU(data, header=h))
         tmp = path.with_suffix(".tmp")
         fits.HDUList(hdus).writeto(tmp, overwrite=True)
         os.replace(tmp, path)
@@ -384,6 +430,34 @@ def assemble(task):
 def link(src, dst):
     if not dst.exists():
         os.link(src, dst)
+
+
+def reuse(task):
+    """Hard-link one exposure's images and PSFs from sim `exposures_from`;
+    its weight and flag too, or with `masks: none` write unit weight and zero flag."""
+    run, exp = task
+    src = run.cfg["exposures_from"]
+    src_shared = run.root / f"{src}_shared"
+    shared_exp = run.shared / "SP_exp"
+    shared_exp.mkdir(parents=True, exist_ok=True)
+    for kind, fill in (("weight", np.ones_like), ("flag", np.zeros_like)):
+        dst = shared_exp / exp_file(kind, exp)
+        if run.cfg.get("masks", "real") == "real":
+            link(src_shared / "SP_exp" / exp_file(kind, exp), dst)
+        elif not dst.exists():
+            with fits.open(src_shared / "SP_exp" / exp_file(kind, exp)) as f:
+                hdus = [fits.PrimaryHDU(header=f[0].header)]
+                hdus += [fits.ImageHDU(fill(h.data), header=h.header) for h in f[1:]]
+                fits.HDUList(hdus).writeto(dst.with_suffix(".tmp"), overwrite=True)
+            os.replace(dst.with_suffix(".tmp"), dst)
+    link(src_shared / "psf" / f"{exp}.pickle", run.shared / "psf" / f"{exp}.pickle")
+    for b, sim in run.sim.items():
+        d = sim / "images" / "SP_exp"
+        d.mkdir(parents=True, exist_ok=True)
+        for kind in ("weight", "flag"):
+            link(shared_exp / exp_file(kind, exp), d / exp_file(kind, exp))
+        link(run.root / f"{b}_{src}" / "images" / "SP_exp" / exp_file("image", exp),
+             d / exp_file("image", exp))
 
 
 # --- tiles ------------------------------------------------------------------
@@ -411,7 +485,7 @@ def coadd(task):
         "-IMAGEOUT_NAME", str(img), "-WEIGHTOUT_NAME", str(wht),
         "-WEIGHT_TYPE", "MAP_WEIGHT",
         "-WEIGHT_IMAGE", ",".join(str(sp_exp / exp_file("weight", e)) for e in exps),
-        "-COMBINE_TYPE", "WEIGHTED", "-RESAMPLING_TYPE", "LANCZOS3",
+        "-COMBINE_TYPE", run.cfg.get("coadd", "weighted").upper(), "-RESAMPLING_TYPE", "LANCZOS3",
         "-SUBTRACT_BACK", "N", "-FSCALE_KEYWORD", "FSCALE", "-GAIN_KEYWORD", "GAIN",
         "-COPY_KEYWORDS", "OBJECT,FILTER",
         "-RESAMPLE_DIR", str(tmp), "-VMEM_DIR", str(tmp),
@@ -484,7 +558,7 @@ def main():
 
     with open(args.config) as f:
         run = Run(yaml.safe_load(f))
-    tiles = args.tiles or list(run.tiles)
+    tiles = args.tiles or run.cfg.get("tiles") or list(run.tiles)
     exps = sorted({e for t in tiles for e in run.tiles[t][1]})
     run.shared.mkdir(parents=True, exist_ok=True)
     (run.shared / "psf").mkdir(exist_ok=True)
@@ -500,7 +574,11 @@ def main():
     if args.shard:
         exps = exps[args.shard[0]::args.shard[1]]
     todo = [e for e in exps if not done_exposure(run, e)]
-    if todo:
+    if todo and "exposures_from" in run.cfg:
+        with Pool(min(args.jobs, 8)) as pool:
+            pool.map(reuse, [(run, e) for e in todo])
+        print(f"exposures linked from {run.cfg['exposures_from']}: {todo}", flush=True)
+    elif todo:
         targets, rho4 = star_targets(run, sorted({e for _, es in run.tiles.values() for e in es}))
         beta = moffat_beta(rho4)
         print(f"stars: median rho4 {rho4:.4f} -> Moffat beta {beta:.3f}", flush=True)
@@ -511,7 +589,7 @@ def main():
             for r in pool.imap_unordered(draw_ccd, tasks):
                 rows[f"{r['EXPOSURE']}"].append(r)
                 print(f"drew {r['EXPOSURE']}-{r['CCD']}: {r['N_GAL']} galaxies, "
-                      f"rms {r['RMS']:.2f}", flush=True)
+                      f"rms {r['CCD_RMS']:.2f}", flush=True)
             pool.map(assemble, [(run, e, rows[e]) for e in todo])
         print(f"exposures written: {todo}", flush=True)
     if args.shard:
