@@ -91,7 +91,7 @@ srun ... python -m unions.checks unions/config.yaml
 ## Rungs: one ingredient changed at a time
 
 Optional config keys each change one ingredient from the twin above; left
-out, the twin is as described. The October-ingredient rungs of run 2
+out, the twin is as described. The rungs of run 2
 (`config_grid2_<rung>.yaml`, sims `*_grid_2-<rung>`) use them on 25 tiles of
 run 2 (`tiles:`), with run 2's galaxies and noise seeds, so objects pair
 across rungs.
@@ -101,6 +101,8 @@ across rungs.
 | `tiles` | all the campaign's tiles, or a list | build only these tiles and the exposures they coadd; the lattice still spans the campaign, so the truth table is the full run's |
 | `camera` | `real`, `tan` | `tan`: each CCD's WCS reduced to a pure TAN projection, the TPV polynomial's affine part folded into CD and CRPIX and its higher orders (the field distortion) dropped: on run 2 a CCD moves on the sky by up to 14″ at its centre and 27″ at a corner, and its pixel scale changes by up to 1.5 %. Galaxies, PSF fit and dictionary stamp, coadd and ShapePipe all read the written header, so they stay consistent; the PSF is then constant on the sky as well as in pixels |
 | `noise_rms` | `ccd`, `exposure` | `exposure`: every CCD gets the median of its exposure's 40 CCD sky rms (same noise seeds, so the noise is each CCD's rescaled) |
+| `noise_scale` | 1, a number | every CCD's noise rms times this (same seeds, so the noise image is scaled) |
+| `psf_shape` | `stars`, `round` | `round`: the Moffat keeps the CCD's star size T and has zero HSM ellipticity on the sky at the CCD centre |
 | `masks` | `real`, `none` | `none`: unit weight and zero flag on every pixel (the noise rms is still measured on the real good pixels) |
 | `coadd` | `weighted`, `median` | SWarp `COMBINE_TYPE` |
 | `exposures_from` | unset, or a sim tag | hard-link that sim's exposure images and PSFs instead of drawing them (it must have been drawn with the same galaxies, noise and camera); its weight and flag too unless `masks: none` |

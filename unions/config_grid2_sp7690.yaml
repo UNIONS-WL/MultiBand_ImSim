@@ -1,0 +1,35 @@
+# Rung grid_2-sp7690 of run 2 (README.md, "Rungs"), on 25 tiles.
+# Changed: nothing in the images; ShapePipe is develop at 7690e78f (30 Sep 2026), the public commit nearest October's.
+campaign_dir: /scratch/cdaley/imsim/staging/g2-253-246
+
+stars: /project/rrg-kyi/cdaley/unions/data/v2.x/v2.0.0/catalogs/stars/dataset
+
+skills: /scratch/cdaley/imsim/inputs/skills/galaxies/skills_v07Ds_input_part*.feather
+mag_column: r_SDSS_apparent_corr
+mag_range: [18.5, 26.0]
+
+# 25 interior tiles of run 2, a 5 x 5 block around 253.246; every exposure
+# they coadd (49) is drawn in run 2.
+tiles: ["252.244", "252.245", "252.246", "252.247", "252.248",
+        "253.244", "253.245", "253.246", "253.247", "253.248",
+        "254.244", "254.245", "254.246", "254.247", "254.248",
+        "255.244", "255.245", "255.246", "255.247", "255.248",
+        "256.244", "256.245", "256.246", "256.247", "256.248"]
+
+layout: grid
+grid_spacing_arcsec: 10.0
+
+shear: 0.025
+branches: [1z2z, 1p2z, 1m2z, 1z2p, 1z2m]
+
+seed: 2
+
+output_root: /scratch/cdaley/imsim/sims
+sim_num: 2-sp7690
+psf_dict: /scratch/cdaley/imsim/sims/psf_dict_grid_2-sp7690.pickle
+
+psf_stamp: 51
+
+swarp: /scratch/cdaley/imsim/env/swarp/bin/swarp
+
+exposures_from: grid_2

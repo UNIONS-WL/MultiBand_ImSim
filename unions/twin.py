@@ -12,7 +12,8 @@ as the real tiles are. The output is ShapePipe's image-simulation input layout
 
 Optional config keys change one ingredient each (README.md, "Rungs"):
 `camera: tan` (each CCD's WCS without its distortion), `noise_rms: exposure`
-(one rms per exposure), `masks: none` (unit weight, no flags), `coadd: median`
+(one rms per exposure), `noise_scale` (every rms times this),
+`psf_shape: round` (the stars' size, zero ellipticity), `masks: none` (unit weight, no flags), `coadd: median`
 (SWarp COMBINE_TYPE MEDIAN), `tiles:` (build only these), and
 `exposures_from: <tag>` (hard-link the exposures and PSFs of sim `<tag>`,
 drawn from the same galaxies, noise and camera, instead of drawing them).
@@ -197,14 +198,17 @@ def star_targets(run, exps):
     return med, float(s.HSM_RHO4_STAR.median())
 
 
-def ccd_target(targets, exp, ccd):
-    """(T, g1, g2, has_stars) for one CCD. A CCD with no v2 stars had no PSF
-    model in the data and so contributes no epoch to the shape measurement;
-    it is drawn with its exposure's median PSF and left out of the PSF
-    dictionary, which drops its epochs in ShapePipe as in the data."""
-    if (exp, ccd) in targets.index:
-        return (*targets.loc[(exp, ccd)].iloc[:3], True)
-    return (*targets.loc[exp].iloc[:, :3].median(), False)
+def ccd_target(targets, exp, ccd, round_psf=False):
+    """(T, g1, g2, has_stars) for one CCD; `round_psf` sets g1 = g2 = 0.
+
+    A CCD with no v2 stars had no PSF model in the data and so contributes no
+    epoch to the shape measurement; it is drawn with its exposure's median PSF
+    and left out of the PSF dictionary, which drops its epochs in ShapePipe as
+    in the data."""
+    has_stars = (exp, ccd) in targets.index
+    stars = targets.loc[(exp, ccd)].iloc[:3] if has_stars else targets.loc[exp].iloc[:, :3].median()
+    T, g1, g2 = stars
+    return (T, 0.0, 0.0, has_stars) if round_psf else (T, g1, g2, has_stars)
 
 
 def moffat_beta(rho4, scale=0.187):
@@ -390,7 +394,8 @@ def assemble(task):
     """Add the noise; write one exposure's per-branch images and shared weight and flag.
 
     The noise rms is each CCD's measured sky rms, or with `noise_rms: exposure`
-    the median of the exposure's 40 CCD values on every CCD (same seeds).
+    the median of the exposure's 40 CCD values on every CCD, times `noise_scale`
+    (same seeds in every case).
     """
     run, exp, rows = task
     work = run.shared / "work" / exp
@@ -399,7 +404,8 @@ def assemble(task):
     headers = [fits.Header.fromstring(r["HEADER"]) for r in rows]
     exp_rms = float(np.median([r["CCD_RMS"] for r in rows]))
     for r in rows:
-        r["RMS"] = exp_rms if run.cfg.get("noise_rms", "ccd") == "exposure" else r["CCD_RMS"]
+        r["RMS"] = run.cfg.get("noise_scale", 1.0) * (
+            exp_rms if run.cfg.get("noise_rms", "ccd") == "exposure" else r["CCD_RMS"])
 
     def write(path, part):
         hdus = [fits.PrimaryHDU(header=primary)]
@@ -582,7 +588,8 @@ def main():
         targets, rho4 = star_targets(run, sorted({e for _, es in run.tiles.values() for e in es}))
         beta = moffat_beta(rho4)
         print(f"stars: median rho4 {rho4:.4f} -> Moffat beta {beta:.3f}", flush=True)
-        tasks = [(run, e, c, ccd_target(targets, int(e), c), beta)
+        round_psf = run.cfg.get("psf_shape", "stars") == "round"
+        tasks = [(run, e, c, ccd_target(targets, int(e), c, round_psf), beta)
                  for e in todo for c in range(N_CCD)]
         rows = {e: [] for e in todo}
         with Pool(args.jobs) as pool:
