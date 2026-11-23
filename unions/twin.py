@@ -28,7 +28,8 @@ import shutil
 import subprocess
 import tarfile
 import warnings
-from multiprocessing import Pool
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import get_context
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -259,6 +260,7 @@ def make_stars(run):
 #   and ShapePipe is handed the models themselves (`{shared}/psfex/`).
 
 PSFEX_PATTERN = "star_split_ratio_80"  # ShapePipe's ME_DOT_PSF_PATTERN
+PSF_CHUNK = 256  # positions per PSFEx evaluation
 PSFEX_STAR_THRESH, PSFEX_CHI2_THRESH = 22, 2  # ShapePipe's v2 psfex_interp gate
 
 
@@ -345,22 +347,24 @@ def pixel_profile(stamp):
 
 class CcdPsf:
     """The PSF of one CCD: the dictionary stamp, the drawing method, metadata
-    for the CCD table, and `profiles`, the PSF at image positions in sky units."""
+    for the CCD table, and `at`, the PSF at image positions in sky units."""
 
     def __init__(self, stamp, method, row, pixel=None, model=None):
         self.stamp, self.method, self.row = stamp, method, row
         self._pixel, self._model = pixel, model
 
-    def profiles(self, x, y, locals_):
-        """PSF profiles at 1-based image positions (x, y), through each
-        position's local WCS."""
+    def at(self, x, y, locals_):
+        """Yield the PSF profile at each 1-based image position (x, y), through
+        its local WCS. One position's profile is held at a time: an interpolated
+        stamp's cached Fourier transform is of order a megabyte."""
         if self._model is None:
-            return [lw.toWorld(self._pixel) for lw in locals_]
-        if not len(locals_):
-            return []
-        # ShapePipe's multi-epoch interpolation evaluates at 0-based pixels
-        stamps = psfex_stamps(self._model, np.asarray(x) - 1, np.asarray(y) - 1)
-        return [lw.toWorld(pixel_profile(s)) for s, lw in zip(stamps, locals_)]
+            yield from (lw.toWorld(self._pixel) for lw in locals_)
+            return
+        for k in range(0, len(locals_), PSF_CHUNK):
+            c = slice(k, k + PSF_CHUNK)
+            # ShapePipe's multi-epoch interpolation evaluates at 0-based pixels
+            stamps = psfex_stamps(self._model, np.asarray(x[c]) - 1, np.asarray(y[c]) - 1)
+            yield from (lw.toWorld(pixel_profile(st)) for st, lw in zip(stamps, locals_[c]))
 
 
 def ccd_psf(run, exp, ccd, inputs, gwcs, centre):
@@ -461,7 +465,7 @@ def draw_ccd(task):
     shapes = _hsm_columns(_hsm_row(psf.stamp, hsm_sky(psf.stamp, local), local), "PSF")
 
     def on_ccd(table):
-        """Rows whose stamp may touch the CCD, their pixel positions and PSFs."""
+        """Rows whose stamp may touch the CCD, their pixel positions and local WCSs."""
         ra0, dec0 = wcs.all_pix2world([[centre.x, centre.y]], 1)[0]
         near = (np.abs(table["DEC"] - dec0) < 0.16) & (
             np.abs((table["RA"] - ra0) * np.cos(np.radians(dec0))) < 0.16)
@@ -471,11 +475,11 @@ def draw_ccd(task):
         on = (x > -m) & (x < CCD_NX + m) & (y > -m) & (y < CCD_NY + m)
         t, x, y = t[on], x[on], y[on]
         locals_ = [gwcs.local(galsim.PositionD(xi, yi)) for xi, yi in zip(x, y)]
-        return t, x, y, locals_, psf.profiles(x, y, locals_)
+        return t, x, y, locals_
 
-    cand, x, y, locals_, psfs = on_ccd(TRUTH)
+    cand, x, y, locals_ = on_ccd(TRUTH)
     canvases = {b: galsim.ImageF(CCD_NX, CCD_NY) for b in run.branches}
-    for row, xi, yi, lw, psf_here in zip(cand, x, y, locals_, psfs):
+    for row, xi, yi, lw, psf_here in zip(cand, x, y, locals_, psf.at(x, y, locals_)):
         pos = galsim.PositionD(xi, yi)
         info = gal_info(row, 10 ** (-0.4 * (row["MAG_R"] - zp)))
         n = None
@@ -490,9 +494,9 @@ def draw_ccd(task):
     stars = galsim.ImageF(CCD_NX, CCD_NY)
     n_star = 0
     if STARS is not None:
-        cand_s, xs, ys, locals_s, psfs_s = on_ccd(STARS)
+        cand_s, xs, ys, locals_s = on_ccd(STARS)
         n_star = len(cand_s)
-        for row, xi, yi, lw, psf_here in zip(cand_s, xs, ys, locals_s, psfs_s):
+        for row, xi, yi, lw, psf_here in zip(cand_s, xs, ys, locals_s, psf.at(xs, ys, locals_s)):
             star = psf_here.withFlux(10 ** (-0.4 * (row["MAG_R"] - zp)))
             n = min(star.getGoodImageSize(lw.minLinearScale()), STAMP_MAX)
             st = star.drawImage(nx=n, ny=n, wcs=lw, center=galsim.PositionD(xi, yi),
@@ -512,6 +516,19 @@ def draw_ccd(task):
     return {"EXPOSURE": int(exp), "CCD": ccd, "RMS": rms, "N_GAL": len(cand), "N_STAR": n_star,
             "PSF_MODEL": run.cfg["psf"]["model"], **psf.row,
             "HEADER": header.tostring(), "VIGNET": psf.stamp, "SHAPES": shapes}
+
+
+def parallel(func, tasks, jobs):
+    """Results of func over tasks in forked workers, as they finish. A task that
+    fails, or a worker the kernel kills, raises here."""
+    with ProcessPoolExecutor(jobs, mp_context=get_context("fork")) as pool:
+        futures = [pool.submit(func, t) for t in tasks]
+        try:
+            for f in as_completed(futures):
+                yield f.result()
+        except BaseException:
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
 
 
 def exp_file(kind, exp):
@@ -678,12 +695,13 @@ def main():
         inputs = psf_inputs(run, todo)
         tasks = [(run, e, c, inputs[(e, c)]) for e in todo for c in range(N_CCD)]
         rows = {e: [] for e in todo}
-        with Pool(args.jobs) as pool:
-            for r in pool.imap_unordered(draw_ccd, tasks):
-                rows[f"{r['EXPOSURE']}"].append(r)
-                print(f"drew {r['EXPOSURE']}-{r['CCD']}: {r['N_GAL']} galaxies, "
-                      f"rms {r['RMS']:.2f}", flush=True)
-            pool.map(assemble, [(run, e, rows[e]) for e in todo])
+        for r in parallel(draw_ccd, tasks, args.jobs):
+            rows[f"{r['EXPOSURE']}"].append(r)
+            print(f"drew {r['EXPOSURE']}-{r['CCD']}: {r['N_GAL']} galaxies, "
+                  f"rms {r['RMS']:.2f}", flush=True)
+            e = f"{r['EXPOSURE']}"
+            if len(rows[e]) == N_CCD:
+                assemble((run, e, rows.pop(e)))
         print(f"exposures written: {todo}", flush=True)
     if args.shard:
         return
@@ -691,8 +709,9 @@ def main():
     todo = [(t, b) for t in tiles if not done_tile(run, t) for b in run.branches]
     if todo:
         nthreads = 4
-        with Pool(max(1, args.jobs // nthreads)) as pool:
-            pool.map(coadd, [(run, t, b, nthreads) for t, b in todo], chunksize=1)
+        for _ in parallel(coadd, [(run, t, b, nthreads) for t, b in todo],
+                          max(1, args.jobs // nthreads)):
+            pass
         print(f"tiles written: {sorted({t for t, _ in todo})}", flush=True)
 
     finish(run)
