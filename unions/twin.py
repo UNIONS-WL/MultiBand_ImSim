@@ -42,6 +42,7 @@ import yaml
 from astropy.io import fits
 from astropy.table import Table
 from astropy.wcs import WCS, FITSFixedWarning
+from scipy.spatial import ConvexHull
 from shapepipe.modules.psfex_interp_package.psfex_interp import (
     PSFExInterpolator,
     _hsm_columns,
@@ -92,6 +93,8 @@ class Run:
             history = [str(h).strip() for h in header["HISTORY"]]
             exps = [re.search(r"(\d{7})p\.fits", h).group(1) for h in history]
             self.tiles[tile] = (header, exps)
+        self.build = cfg.get("tiles") or list(self.tiles)  # the tiles simulated
+        self.exposures = sorted({e for t in self.build for e in self.tiles[t][1]})
 
     def exp_path(self, exp, kind=""):
         return self.campaign / "exposures" / f"{exp}p{kind}.fits.fz"
@@ -143,17 +146,45 @@ def lattice(run):
     return ra[keep], dec[keep]
 
 
+def exposure_hulls(run, lat, margin=30 / 3600):
+    """Each exposure's CCDs as a convex hull in the tangent plane of `lat`,
+    as its half-plane equations (a, b, c: a x + b y + c <= 0 inside) grown by
+    `margin` (deg) on every side, and the corners of the box around them all."""
+    hulls, corners = [], []
+    for exp in run.exposures:
+        with fits.open(run.exp_path(exp)) as f:
+            ccds = [WCS(ccd_header(f[c + 1].header)) for c in range(N_CCD)]
+        sky = np.concatenate([w.all_pix2world([[0.5, 0.5], [CCD_NX + 0.5, 0.5], [0.5, CCD_NY + 0.5],
+                                               [CCD_NX + 0.5, CCD_NY + 0.5]], 1) for w in ccds])
+        xy = lat.all_world2pix(sky, 1)
+        hull = ConvexHull(xy).equations.copy()
+        hull[:, 2] -= margin / abs(lat.wcs.cdelt[1])
+        hulls.append(hull)
+        corners.append(xy)
+    corners = np.concatenate(corners)
+    pad = margin / abs(lat.wcs.cdelt[1])
+    return hulls, corners.min(0) - pad, corners.max(0) + pad
+
+
+def in_hulls(hulls, x, y):
+    keep = np.zeros(np.size(x), bool)
+    for h in hulls:
+        keep |= np.all([a * x + b * y + c <= 0 for a, b, c in h], axis=0)
+    return keep
+
+
 def transplant(run, ra, dec):
     """Move sky positions from their own patch onto the campaign: the offsets
     in the tangent plane at the patch centre become offsets in the tangent
     plane at the campaign centre, so separations are kept. Returns the moved
-    (ra, dec) and which of them fall in the tiles."""
-    lat, walls, _, _ = footprint(run, 1 / 3600)
+    (ra, dec) and which of them fall on the exposures."""
+    lat, *_ = footprint(run, 1 / 3600)
     src = lat.deepcopy()
     src.wcs.crval = [0.5 * (ra.min() + ra.max()), 0.5 * (dec.min() + dec.max())]
     x, y = src.all_world2pix(ra, dec, 1)
     ra2, dec2 = lat.all_pix2world(x, y, 1)
-    return ra2, dec2, in_footprint(walls, ra2, dec2)
+    hulls, *_ = exposure_hulls(run, lat)
+    return ra2, dec2, in_hulls(hulls, x, y)
 
 
 def read_skills(cfg, cols):
@@ -169,7 +200,7 @@ def make_truth(run):
     """Input galaxies. `layout: grid`: lattice positions with SKiLLS galaxies
     drawn at random and random position angles. `layout: skills`: every SKiLLS
     galaxy in `mag_range` at its own position and position angle, its patch
-    moved onto the campaign (`transplant`), so blending is SKiLLS's."""
+    moved onto the campaign and kept over the exposures (`transplant`), so blending is SKiLLS's."""
     cfg = run.cfg
     cols = ["index", "Re_arcsec", "BA", "shape/sersic_n", cfg["mag_column"]]
     rng = np.random.default_rng([cfg["seed"], 0])
@@ -222,19 +253,20 @@ def make_truth(run):
 def make_stars(run):
     """Input stars (`star_population:` in the config): a stellar population catalogue
     without positions (SKiLLS's TRILEGAL files, `..._<N>deg2_...`), placed
-    uniformly at random over the tiles at the catalogue's density, each star
+    uniformly at random over the exposures at the catalogue's density, each star
     a catalogue row drawn at random, in `mag_range` of the catalogue's r."""
     cfg = run.cfg["star_population"]
     cat = feather.read_table(cfg["catalogue"]).to_pandas()
     area = float(re.search(r"_([\d.]+)deg2_", Path(cfg["catalogue"]).name).group(1))
     cat = cat[(cat["r"] >= cfg["mag_range"][0]) & (cat["r"] < cfg["mag_range"][1])]
-    lat, walls, lo, hi = footprint(run, 1 / 3600)
+    lat, *_ = footprint(run, 1 / 3600)
+    hulls, lo, hi = exposure_hulls(run, lat)
     box = np.prod(hi - lo) / 3600 ** 2  # deg^2, tangent plane
     rng = np.random.default_rng([run.cfg["seed"], 1])
     n = rng.poisson(len(cat) / area * box)
     x, y = rng.uniform(lo[0], hi[0], n), rng.uniform(lo[1], hi[1], n)
     ra, dec = lat.all_pix2world(x, y, 1)
-    on = in_footprint(walls, ra, dec)
+    on = in_hulls(hulls, x, y)
     pick = cat.iloc[rng.choice(len(cat), size=on.sum())]
     mag = pick["r"].to_numpy()
     return Table({"ID": np.arange(on.sum()), "RA": ra[on], "DEC": dec[on],
@@ -668,7 +700,7 @@ def main():
 
     with open(args.config) as f:
         run = Run(yaml.safe_load(f))
-    tiles = args.tiles or list(run.tiles)
+    tiles = args.tiles or run.build
     exps = sorted({e for t in tiles for e in run.tiles[t][1]})
     run.shared.mkdir(parents=True, exist_ok=True)
     (run.shared / "psf").mkdir(exist_ok=True)

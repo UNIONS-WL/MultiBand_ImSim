@@ -54,10 +54,13 @@ For each real exposure of the campaign and each of its 40 CCDs:
     angle. Isolated galaxies.
   - `layout: skills`: every SKiLLS galaxy in `mag_range` at its own position
     and position angle, the SKiLLS patch moved onto the campaign by keeping
-    each galaxy's offset in the tangent plane, so the blending is SKiLLS's.
+    each galaxy's offset in the tangent plane, so the blending is SKiLLS's;
+    kept wherever the exposures reach, not only in the tiles.
+- **Tiles** (`tiles:`, optional): simulate only these tiles of the campaign and
+  the exposures they coadd.
 - **Stars** (`star_population`, optional): a stellar population catalogue without
   positions (SKiLLS's TRILEGAL files), stars placed uniformly at random over
-  the tiles at the catalogue's density, each a catalogue row drawn at random
+  the exposures at the catalogue's density, each a catalogue row drawn at random
   in `mag_range`, drawn as the PSF and identical in every shear branch. With
   stars, ShapePipe can fit PSFEx to the simulation as it does to the data.
 - **Tiles:** the branch's exposures are coadded with SWarp onto each real
@@ -127,6 +130,7 @@ each changing one ingredient:
 | `config_psfex.yaml` | same galaxies | real PSFEx model at the CCD centre, given | + the real PSF's profile |
 | `config_psfex_vary.yaml` | same galaxies | real PSFEx model at each galaxy, given | + its variation across the CCD |
 | `config_blended.yaml` | SKiLLS positions, r 15–27, + TRILEGAL stars | as above, but ShapePipe fits PSFEx to the simulated stars | + blending, undetected galaxies, PSF-model error |
+| `config_grid2_blended.yaml` | as `config_blended.yaml`, on run 2's 25 rung tiles | as above | as above, at run 2's depth and seeing |
 
 The three lattice rungs share galaxies and noise object by object, so their
 differences in m can be measured on matched objects with little noise.
