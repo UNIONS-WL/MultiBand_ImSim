@@ -1,0 +1,51 @@
+campaign_dir: /scratch/cdaley/imsim/staging/g2-253-246
+stars: /project/rrg-kyi/cdaley/unions/data/v2.x/v2.0.0/catalogs/stars/dataset
+skills: /scratch/cdaley/imsim/inputs/skills/galaxies/skills_v07Ds_input_part*.feather
+mag_column: r_SDSS_apparent_corr
+shear: 0.025
+branches:
+- 1z2z
+- 1p2z
+- 1m2z
+- 1z2p
+- 1z2m
+seed: 2
+output_root: /project/rrg-kyi/cdaley/unions/analyses/image-sims/sims
+psf_stamp: 51
+swarp: /scratch/cdaley/imsim/env/swarp/bin/swarp
+mag_range:
+- 15.0
+- 27.0
+tiles:
+- '252.244'
+- '252.245'
+- '252.246'
+- '252.247'
+- '252.248'
+- '253.244'
+- '253.245'
+- '253.246'
+- '253.247'
+- '253.248'
+- '254.244'
+- '254.245'
+- '254.246'
+- '254.247'
+- '254.248'
+- '255.244'
+- '255.245'
+- '255.246'
+- '255.247'
+- '255.248'
+- '256.244'
+- '256.245'
+- '256.246'
+- '256.247'
+- '256.248'
+layout: skills
+sim_num: 2-blended-nostars
+psf_dict: /project/rrg-kyi/cdaley/unions/analyses/image-sims/sims/psf_dict_skills_2-blended-nostars.pickle
+psf:
+  model: psfex
+  psfex_models: /project/rrg-kyi/cdaley/unions/analyses/image-sims/inputs/exp_psf
+  vary: true

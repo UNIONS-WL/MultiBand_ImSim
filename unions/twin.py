@@ -399,6 +399,16 @@ class CcdPsf:
             yield from (lw.toWorld(pixel_profile(st)) for st, lw in zip(stamps, locals_[c]))
 
 
+def ccd_target(targets, exp, ccd):
+    """(T, g1, g2, has_stars) for one CCD. A CCD with no v2 stars had no PSF
+    model in the data and so contributes no epoch to the shape measurement;
+    it is drawn with its exposure's median PSF and left out of the PSF
+    dictionary, which drops its epochs in ShapePipe as in the data."""
+    if (exp, ccd) in targets.index:
+        return (*targets.loc[(exp, ccd)].iloc[:3], True)
+    return (*targets.loc[exp].iloc[:, :3].median(), False)
+
+
 def ccd_psf(run, exp, ccd, inputs, gwcs, centre):
     """This CCD's PSF under the run's `psf` config."""
     cfg = run.cfg["psf"]
@@ -406,10 +416,11 @@ def ccd_psf(run, exp, ccd, inputs, gwcs, centre):
     size = run.cfg["psf_stamp"]
     if cfg["model"] == "moffat":
         target, beta = inputs
-        fwhm, pg1, pg2 = fit_psf(target, beta, local, size)
+        fwhm, pg1, pg2 = fit_psf(target[:3], beta, local, size)
         psf = psf_profile(beta, fwhm, pg1, pg2)
         row = {"PSF_BETA": beta, "PSF_FWHM": fwhm, "PSF_G1_IN": pg1, "PSF_G2_IN": pg2,
-               "STAR_T": target[0], "STAR_G1": target[1], "STAR_G2": target[2]}
+               "STAR_T": target[0], "STAR_G1": target[1], "STAR_G2": target[2],
+               "HAS_STARS": target[3]}
         return CcdPsf(draw_psf(psf, local, size), "auto", row, pixel=local.toImage(psf))
     hdul = psfex_in_sim_frame(read_psfex(cfg["psfex_models"], exp, ccd))
     path = run.shared / "psfex" / psfex_name(exp, ccd)
@@ -431,7 +442,7 @@ def psf_inputs(run, exps):
     targets, rho4 = star_targets(run, sorted({e for _, es in run.tiles.values() for e in es}))
     beta = moffat_beta(rho4)
     print(f"stars: median rho4 {rho4:.4f} -> Moffat beta {beta:.3f}", flush=True)
-    return {(e, c): (tuple(targets.loc[(int(e), c)].iloc[:3]), beta)
+    return {(e, c): (ccd_target(targets, int(e), c), beta)
             for e in exps for c in range(N_CCD)}
 
 
@@ -664,7 +675,7 @@ def finish(run):
         with open(path, "rb") as f:
             rows += pickle.load(f)
     psf_dict = {f"{r['EXPOSURE']}-{r['CCD']}": {"VIGNET": r["VIGNET"], "SHAPES": r["SHAPES"]}
-                for r in rows}
+                for r in rows if r.get("HAS_STARS", True)}
     tmp = Path(run.cfg["psf_dict"] + ".tmp")
     with open(tmp, "wb") as f:
         pickle.dump(psf_dict, f)
